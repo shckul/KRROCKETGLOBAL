@@ -144,7 +144,7 @@
         #timer-label { font-size: 11px; color: var(--text-dim); margin-top: 8px; letter-spacing: 3px; text-transform: uppercase; }
         #timer-value { font-weight: 700; color: var(--text); font-size: 17px; }
 
-        #history-row { display: flex; gap: 5px; overflow-x: auto; padding: 2px 0; flex-shrink: 0; min-height: 26px; align-items: center; }
+        #history-row { display: flex; gap: 5px; overflow-x: auto; padding: 2px 0; flex-shrink: 0; min-height: 26px; align-items: center; -webkit-overflow-scrolling: touch; }
         #history-row::-webkit-scrollbar { display: none; }
         .history-bubble { padding: 4px 9px; border-radius: 5px; font-size: 10px; font-weight: 700; white-space: nowrap; flex-shrink: 0; font-family: 'SF Mono', 'Courier New', monospace; }
         .history-bubble.green { background: #0f1e14; color: var(--green); border: 1px solid #1a3020; }
@@ -163,7 +163,7 @@
         #action-btn.cashout-btn { background: #c49b3f; color: #0a0a0a; animation: subtle-pulse 2s ease-in-out infinite; }
         @keyframes subtle-pulse { 0%,100% { background: #c49b3f; } 50% { background: #d4a84b; } }
 
-        #players-box { background: var(--panel); border-radius: 12px; padding: 10px 14px; flex-shrink: 0; border: 1px solid var(--border); max-height: 20vh; overflow-y: auto; }
+        #players-box { background: var(--panel); border-radius: 12px; padding: 10px 14px; flex-shrink: 0; border: 1px solid var(--border); max-height: 20vh; overflow-y: auto; -webkit-overflow-scrolling: touch; }
         #players-box .section-title { font-size: 10px; color: var(--text-dim); margin-bottom: 8px; text-transform: uppercase; letter-spacing: 3px; font-weight: 600; }
         #players-list { display: flex; flex-direction: column; gap: 4px; }
         .player-row { display: flex; justify-content: space-between; align-items: center; padding: 8px 10px; background: var(--panel-alt); border-radius: 7px; font-size: 13px; border: 1px solid transparent; min-height: 38px; }
@@ -265,7 +265,6 @@
             }
         }
 
-        // Ждём если не загрузилось сразу
         window.addEventListener('load', () => {
             if (!tg && window.Telegram?.WebApp) {
                 tg = window.Telegram.WebApp;
@@ -296,6 +295,7 @@
         function connectWebSocket() {
             ws = new WebSocket(wsUrl);
             ws.onopen = () => {
+                console.log('WebSocket connected');
                 if (userId) {
                     ws.send(JSON.stringify({
                         type: 'auth',
@@ -305,13 +305,24 @@
                 }
             };
             ws.onmessage = (event) => {
-                try { handleServerMessage(JSON.parse(event.data)); } catch (e) {}
+                try {
+                    const msg = JSON.parse(event.data);
+                    handleServerMessage(msg);
+                } catch (e) {
+                    console.error('WS parse error:', e);
+                }
             };
-            ws.onclose = () => setTimeout(connectWebSocket, 3000);
+            ws.onclose = () => {
+                console.log('WS disconnected, reconnecting...');
+                setTimeout(connectWebSocket, 3000);
+            };
+            ws.onerror = (err) => {
+                console.error('WS error:', err);
+            };
         }
 
         // ====================
-        // СОСТОЯНИЕ
+        // СОСТОЯНИЕ ИГРЫ
         // ====================
         const GAME = {
             phase: 'waiting',
@@ -328,32 +339,43 @@
 
         const $ = (id) => document.getElementById(id);
 
-        function showToast(msg, d = 2000) {
-            const t = $('toast');
+        function showToast(msg, duration = 2000) {
+            const toast = $('toast');
             clearTimeout(GAME.toastTimeout);
-            t.textContent = msg;
-            t.classList.add('show');
-            GAME.toastTimeout = setTimeout(() => t.classList.remove('show'), d);
+            toast.textContent = msg;
+            toast.classList.add('show');
+            GAME.toastTimeout = setTimeout(() => toast.classList.remove('show'), duration);
         }
 
         function simulateLoading() {
-            const bar = $('loading-bar'), p = $('loading-percent'), s = $('loading-screen'), a = $('app');
+            const bar = $('loading-bar');
+            const p = $('loading-percent');
+            const s = $('loading-screen');
+            const a = $('app');
             let pr = 0;
             const iv = setInterval(() => {
                 pr += Math.random() * 15 + 8;
-                if (pr >= 100) { pr = 100;
+                if (pr >= 100) {
+                    pr = 100;
                     clearInterval(iv);
                     bar.style.width = '100%';
                     p.textContent = '100%';
-                    setTimeout(() => { s.classList.add('hidden');
+                    setTimeout(() => {
+                        s.classList.add('hidden');
                         a.classList.add('visible');
-                        initApp(); }, 350); } else { bar.style.width = pr + '%';
-                    p.textContent = Math.round(pr) + '%'; }
+                        initApp();
+                    }, 350);
+                } else {
+                    bar.style.width = pr + '%';
+                    p.textContent = Math.round(pr) + '%';
+                }
             }, 90);
         }
 
-        function initApp() { connectWebSocket();
-            updateUI(); }
+        function initApp() {
+            connectWebSocket();
+            updateUI();
+        }
 
         function handleServerMessage(msg) {
             switch (msg.type) {
@@ -362,17 +384,21 @@
                     GAME.multiplier = msg.gameState.multiplier;
                     GAME.timer = msg.gameState.timer;
                     break;
+
                 case 'auth_success':
                     balance = msg.balance;
                     GAME.stats = msg.stats || { total: 0, won: 0, lost: 0 };
                     updateUI();
+                    console.log('Auth success, balance:', balance);
                     break;
+
                 case 'round_start':
                     GAME.phase = 'waiting';
                     GAME.multiplier = 1.0;
                     GAME.timer = msg.timer;
                     GAME.hasBet = false;
                     GAME.hasCashedOut = false;
+                    GAME.betAmount = 0;
                     GAME.players = [];
                     $('multiplier-value').textContent = '1.00x';
                     $('multiplier-value').className = 'waiting';
@@ -388,11 +414,13 @@
                     $('action-btn').style.color = '';
                     updateUI();
                     break;
+
                 case 'timer_update':
                     GAME.timer = msg.timer;
                     $('timer-value').textContent = msg.timer;
                     if (msg.timer <= 2) $('timer-value').style.color = 'var(--accent-dim)';
                     break;
+
                 case 'flight_start':
                     GAME.phase = 'flying';
                     GAME.hasCashedOut = false;
@@ -405,6 +433,8 @@
                         $('action-btn').textContent = 'ЗАБРАТЬ';
                         $('action-btn').className = 'cashout-btn';
                         $('action-btn').disabled = false;
+                        $('action-btn').style.background = '';
+                        $('action-btn').style.color = '';
                     } else {
                         $('action-btn').textContent = 'НЕТ СТАВКИ';
                         $('action-btn').className = 'bet-btn';
@@ -413,10 +443,12 @@
                         $('action-btn').style.color = '#3a3a4a';
                     }
                     break;
+
                 case 'multiplier_update':
                     GAME.multiplier = msg.multiplier;
                     $('multiplier-value').textContent = msg.multiplier.toFixed(2) + 'x';
                     break;
+
                 case 'crash':
                     GAME.phase = 'crashed';
                     $('multiplier-value').textContent = msg.crashPoint.toFixed(2) + 'x';
@@ -430,15 +462,25 @@
                     $('action-btn').disabled = true;
                     $('action-btn').style.background = '';
                     $('action-btn').style.color = '';
-                    GAME.players = msg.players.map(p => ({ name: p.name, bet: p.bet, status: p.cashedOut ? 'won' : 'lost' }));
-                    GAME.history.unshift({ val: msg.crashPoint, cls: msg.crashPoint >= 2 ? 'purple' : msg.crashPoint >= 1.01 ? 'green' : 'red' });
+                    GAME.players = msg.players.map(p => ({
+                        name: p.name,
+                        bet: p.bet,
+                        status: p.cashedOut ? 'won' : 'lost'
+                    }));
+                    GAME.history.unshift({
+                        val: msg.crashPoint,
+                        cls: msg.crashPoint >= 2.0 ? 'purple' : msg.crashPoint >= 1.01 ? 'green' : 'red'
+                    });
                     if (GAME.history.length > 30) GAME.history.length = 30;
-                    if (GAME.hasBet && !GAME.hasCashedOut) { GAME.stats.total++;
-                        GAME.stats.lost++; }
+                    if (GAME.hasBet && !GAME.hasCashedOut) {
+                        GAME.stats.total++;
+                        GAME.stats.lost++;
+                    }
                     GAME.hasBet = false;
                     GAME.hasCashedOut = false;
                     updateUI();
                     break;
+
                 case 'bet_accepted':
                     GAME.betAmount = msg.bet;
                     balance = msg.balance;
@@ -447,10 +489,16 @@
                     updateUI();
                     showToast('СТАВКА: ' + msg.bet + ' STARS');
                     break;
+
                 case 'players_update':
-                    GAME.players = msg.players.map(p => ({ name: p.name, bet: p.bet, status: 'playing' }));
+                    GAME.players = msg.players.map(p => ({
+                        name: p.name,
+                        bet: p.bet,
+                        status: 'playing'
+                    }));
                     renderPlayers();
                     break;
+
                 case 'cashout_success':
                     GAME.hasCashedOut = true;
                     balance = msg.balance;
@@ -462,15 +510,19 @@
                     updateUI();
                     showToast('ВЫИГРЫШ: ' + msg.winAmount + ' STARS');
                     break;
+
                 case 'player_cashed_out':
                     const idx = GAME.players.findIndex(p => p.name === msg.playerName && p.status === 'playing');
                     if (idx !== -1) GAME.players[idx].status = 'won';
                     renderPlayers();
                     break;
+
                 case 'balance_update':
                     balance = msg.balance;
                     updateUI();
+                    console.log('Balance updated:', balance);
                     break;
+
                 case 'error':
                     showToast(msg.message);
                     break;
@@ -487,25 +539,39 @@
         }
 
         function renderHistory() {
-            $('history-row').innerHTML = GAME.history.slice(0, 15).map(h => `<span class="history-bubble ${h.cls}">${h.val.toFixed(2)}x</span>`).join('');
+            $('history-row').innerHTML = GAME.history.slice(0, 15).map(h =>
+                `<span class="history-bubble ${h.cls}">${h.val.toFixed(2)}x</span>`
+            ).join('');
         }
 
         function renderPlayers() {
             const l = $('players-list');
-            if (!GAME.players.length) { l.innerHTML = '<div style="color:var(--text-dim);text-align:center;font-size:12px;padding:6px;">Нет ставок</div>'; return; }
+            if (!GAME.players.length) {
+                l.innerHTML = '<div style="color:var(--text-dim);text-align:center;font-size:12px;padding:6px;">Нет ставок</div>';
+                return;
+            }
             l.innerHTML = [...GAME.players].sort((a, b) => b.bet - a.bet).map(p => {
-                let cls = '',
-                    st = '';
+                let cls = '';
+                let st = '';
                 if (p.status === 'won') { cls = 'won';
                     st = 'WIN'; } else if (p.status === 'lost') { cls = 'lost';
                     st = 'LOSS'; }
-                return `<div class="player-row ${cls}"><span class="player-name">${esc(p.name)}</span><span class="player-bet">${p.bet} STARS${st?' <span style="color:'+(p.status==='won'?'var(--green)':'var(--red)')+';font-size:10px;">'+st+'</span>':''}</span></div>`;
+                return `<div class="player-row ${cls}">
+                    <span class="player-name">${esc(p.name)}</span>
+                    <span class="player-bet">${p.bet} STARS${st ? ' <span style="color:' + (p.status === 'won' ? 'var(--green)' : 'var(--red)') + ';font-size:10px;font-weight:700;">' + st + '</span>' : ''}</span>
+                </div>`;
             }).join('');
         }
 
-        function esc(s) { const d = document.createElement('div');
-            d.textContent = s; return d.innerHTML; }
+        function esc(s) {
+            const d = document.createElement('div');
+            d.textContent = s;
+            return d.innerHTML;
+        }
 
+        // ====================
+        // ДЕЙСТВИЯ ИГРОКА
+        // ====================
         function handleAction() {
             if (GAME.phase === 'waiting') placeBet();
             else if (GAME.phase === 'flying' && GAME.hasBet && !GAME.hasCashedOut) cashOut();
@@ -533,41 +599,90 @@
         }
 
         // ====================
-        // ПОПОЛНЕНИЕ
+        // ПОПОЛНЕНИЕ (ИСПРАВЛЕНО)
         // ====================
         async function deposit() {
-            // Обновляем tg если нужно
-            if (!tg && window.Telegram?.WebApp) tg = window.Telegram.WebApp;
-            if (!tg) { showToast('Откройте в Telegram Mini App'); return; }
-            if (!userId && tg.initDataUnsafe?.user) userId = tg.initDataUnsafe.user.id;
-            if (!userId) { showToast('Ошибка авторизации'); return; }
+            if (!tg && window.Telegram?.WebApp) {
+                tg = window.Telegram.WebApp;
+                tg.ready();
+                tg.expand();
+            }
+
+            if (!tg) {
+                showToast('Откройте в Telegram Mini App');
+                console.error('TG not available');
+                return;
+            }
+
+            if (!userId && tg.initDataUnsafe?.user) {
+                userId = tg.initDataUnsafe.user.id;
+            }
+
+            if (!userId) {
+                showToast('Ошибка: пользователь не определён');
+                console.error('No userId');
+                return;
+            }
 
             const amount = parseInt($('deposit-input').value);
-            if (!amount || amount < 1) { showToast('Введите сумму'); return; }
+            if (!amount || amount < 1) {
+                showToast('Введите сумму от 1 звезды');
+                return;
+            }
+
+            showToast('Создание платежа...');
 
             try {
-                const r = await fetch('/api/create-invoice', {
+                const response = await fetch('/api/create-invoice', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ userId, amount }),
+                    body: JSON.stringify({ userId: userId, amount: amount }),
                 });
-                const d = await r.json();
-                if (d.invoice_link) {
-                    tg.openInvoice(d.invoice_link, (status) => {
+
+                const data = await response.json();
+                console.log('Invoice response:', data);
+
+                if (data.invoice_link) {
+                    tg.openInvoice(data.invoice_link, (status) => {
+                        console.log('Payment status:', status);
+
                         if (status === 'paid') {
-                            showToast('Платёж обрабатывается...');
-                            setTimeout(() => { if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'get_balance' })); }, 3000);
+                            showToast('✅ Оплата прошла! Обновляем баланс...');
+
+                            // Запрашиваем баланс несколько раз с задержкой
+                            const requestBalance = () => {
+                                if (ws && ws.readyState === WebSocket.OPEN) {
+                                    ws.send(JSON.stringify({ type: 'get_balance' }));
+                                }
+                            };
+
+                            setTimeout(requestBalance, 2000);
+                            setTimeout(requestBalance, 4000);
+                            setTimeout(requestBalance, 6000);
+                        } else if (status === 'cancelled') {
+                            showToast('Платёж отменён');
+                        } else if (status === 'failed') {
+                            showToast('Ошибка платежа');
                         }
                     });
-                } else { showToast('Ошибка создания платежа'); }
-            } catch (e) { showToast('Ошибка сети'); }
+                } else {
+                    showToast('Ошибка создания платежа');
+                    console.error('No invoice link in response:', data);
+                }
+            } catch (error) {
+                console.error('Deposit error:', error);
+                showToast('Ошибка сети. Попробуйте ещё раз.');
+            }
 
             $('balance-menu').classList.remove('visible');
             $('balance-arrow').innerHTML = '▼';
         }
 
         function withdraw() {
-            if (balance < 100) { showToast('МИН. ВЫВОД: 100 STARS'); return; }
+            if (balance < 100) {
+                showToast('МИН. ВЫВОД: 100 STARS');
+                return;
+            }
             showToast('ЗАЯВКА ОТПРАВЛЕНА');
             $('balance-menu').classList.remove('visible');
             $('balance-arrow').innerHTML = '▼';
@@ -587,24 +702,31 @@
             }
         }
 
+        // Меню баланса
         $('balance-bar').addEventListener('click', (e) => {
             e.stopPropagation();
             $('balance-menu').classList.toggle('visible');
             $('balance-arrow').innerHTML = $('balance-menu').classList.contains('visible') ? '▲' : '▼';
         });
+
         document.addEventListener('click', (e) => {
             if (!$('balance-menu').contains(e.target) && e.target !== $('balance-bar')) {
                 $('balance-menu').classList.remove('visible');
                 $('balance-arrow').innerHTML = '▼';
             }
         });
+
         $('balance-menu').addEventListener('click', (e) => e.stopPropagation());
 
+        // Защита от выхода
         window.addEventListener('beforeunload', (e) => {
-            if (GAME.hasBet && GAME.phase === 'flying' && !GAME.hasCashedOut) { e.preventDefault();
-                e.returnValue = ''; }
+            if (GAME.hasBet && GAME.phase === 'flying' && !GAME.hasCashedOut) {
+                e.preventDefault();
+                e.returnValue = '';
+            }
         });
 
+        // Запуск
         simulateLoading();
     </script>
 </body>
