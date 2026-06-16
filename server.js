@@ -65,7 +65,7 @@ function runServerGameLoop() {
         }, 100);
 
     } else if (gameState.status === "FLYING") {
-        // Интервал полета ракетки (40мс для идеальной плавности 25 кадров в секунду)
+        // Интервал полета ракетки (40мс для идеальной плавности)
         const flyInterval = setInterval(() => {
             elapsed += 0.04;
 
@@ -143,7 +143,7 @@ io.on('connection', (socket) => {
         gameState.players.push(newPlayerBet);
         console.log(`[BET] Ставка принята: ${data.username} поставил ${data.amount} звезд`);
 
-        // Рассылаем обновленный список игроков всем клиентам для авто-рендеринга таблицы
+        // Рассылаем обновленный список игроков всем клиентам
         io.emit('sync_players', gameState.players);
     });
 
@@ -167,19 +167,16 @@ io.on('connection', (socket) => {
             mult: playerBet.mult
         });
 
-        // Всем остальным синхронизируем таблицу (у игрока изменится статус на зеленый "WON")
+        // Всем остальным синхронизируем таблицу
         io.emit('sync_players', gameState.players);
     });
 
-    // Обработка отключения пользователя из сети
     socket.on('disconnect', () => {
         console.log(`[SOCKET] Клиент отключился: ${socket.id}`);
-        // По правилам краш-игр, если пользователь вышел во время раунда, его ставка остается в игре до краша.
     });
 });
 
 // --- ЭНДПОИНТ ДЛЯ TELEGRAM STARS (ПЛАТЕЖИ) ---
-// Твой фронтенд делает POST запрос на /api/create-invoice, отправляя userId и amount
 app.post('/api/create-invoice', async (req, res) => {
     const { userId, amount } = req.body;
 
@@ -188,16 +185,13 @@ app.post('/api/create-invoice', async (req, res) => {
     }
 
     try {
-        // Сюда вставляется токен твоего Telegram бота (из BotFather)
         const BOT_TOKEN = process.env.BOT_TOKEN || "ТВОЙ_ТОКЕН_БОТА";
         
-        // Формируем параметры инвойса для официального API Telegram
         const description = `Пополнение баланса KR ROCKET на ${amount} звезд`;
         const payload = `deposit_user_${userId}_${Date.now()}`;
-        const currency = "XTR"; // XTR — это международный код валюты Telegram Stars
+        const currency = "XTR"; 
         const prices = JSON.stringify([{ label: "Telegram Stars", amount: parseInt(amount) }]);
 
-        // Отправляем запрос к Telegram API через встроенный fetch
         const telegramUrl = `https://api.telegram.org/bot${BOT_TOKEN}/createInvoiceLink`;
         const response = await fetch(telegramUrl, {
             method: 'POST',
@@ -206,7 +200,7 @@ app.post('/api/create-invoice', async (req, res) => {
                 title: "Пополнение ⭐",
                 description: description,
                 payload: payload,
-                provider_token: "", // Для звезд провайдер токен всегда остается пустой строкой
+                provider_token: "", 
                 currency: currency,
                 prices: JSON.parse(prices)
             })
@@ -215,7 +209,6 @@ app.post('/api/create-invoice', async (req, res) => {
         const data = await response.json();
 
         if (data.ok && data.result) {
-            // Возвращаем сгенерированную платежную ссылку обратно нашему фронтенду
             return res.json({ invoiceLink: data.result });
         } else {
             console.error("[TELEGRAM API ERROR]", data);
@@ -227,6 +220,49 @@ app.post('/api/create-invoice', async (req, res) => {
         return res.status(500).json({ error: "Внутренняя ошибка сервера" });
     }
 });
+
+// --- АВТОМАТИЧЕСКОЕ ПОДТВЕРЖДЕНИЕ ПЛАТЕЖЕЙ (LONG POLLING) ---
+const BOT_TOKEN = process.env.BOT_TOKEN || "ТВОЙ_ТОКЕН_БОТА";
+let lastUpdateId = 0;
+
+async function checkTelegramUpdates() {
+    try {
+        const response = await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/getUpdates?offset=${lastUpdateId + 1}&timeout=10`);
+        const data = await response.json();
+
+        if (data.ok && data.result.length > 0) {
+            for (const update of data.result) {
+                lastUpdateId = update.update_id;
+
+                // 1. Ловим запрос на проверку платежа перед списанием звезд (PreCheckout)
+                if (update.pre_checkout_query) {
+                    const qId = update.pre_checkout_query.id;
+                    console.log(`[PAYMENT] Получен pre_checkout_query для платежа ${qId}. Отправляем подтверждение...`);
+                    
+                    // Моментально отвечаем Телеграму "ok: true", чтобы убрать колесико загрузки
+                    await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/answerPreCheckoutQuery`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            pre_checkout_query_id: qId,
+                            ok: true
+                        })
+                    });
+                }
+
+                // 2. Ловим финальное уведомление об успешной оплате
+                if (update.message && update.message.successful_payment) {
+                    const payment = update.message.successful_payment;
+                    console.log(`[PAYMENT] Успешная оплата на сумму ${payment.total_amount} ⭐ от пользователя ${update.message.from.id}`);
+                }
+            }
+        }
+    } catch (err) {
+        // Ошибки таймаута или сети не забивают логи
+    }
+    // Запускаем бесконечную фоновую проверку заново
+    setTimeout(checkTelegramUpdates, 1000);
+}
 
 // --- ДЕФОЛТНЫЙ МАРШРУТ ---
 app.get('/', (req, res) => {
@@ -240,6 +276,11 @@ server.listen(PORT, () => {
     console.log(`[SERVER] Игровой движок Crash успешно запущен.`);
     console.log(`=============================================`);
     
-    // Инициализируем бесконечный цикл работы игры
     runServerGameLoop();
+    
+    // Запускаем фоновый обработчик платежей Telegram, если токен прописан в Render
+    if (BOT_TOKEN !== "ТВОЙ_ТОКЕН_БОТА") {
+        console.log(`[SERVER] Служба проверки платежей Stars запущена.`);
+        checkTelegramUpdates();
+    }
 });
