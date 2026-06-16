@@ -4,6 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, viewport-fit=cover">
     <title>KR ROCKET</title>
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
     <style>
         :root {
             --bg: #060610;
@@ -143,7 +144,7 @@
         #timer-label { font-size: 11px; color: var(--text-dim); margin-top: 8px; letter-spacing: 3px; text-transform: uppercase; }
         #timer-value { font-weight: 700; color: var(--text); font-size: 17px; }
 
-        #history-row { display: flex; gap: 5px; overflow-x: auto; padding: 2px 0; flex-shrink: 0; min-height: 26px; align-items: center; -webkit-overflow-scrolling: touch; }
+        #history-row { display: flex; gap: 5px; overflow-x: auto; padding: 2px 0; flex-shrink: 0; min-height: 26px; align-items: center; }
         #history-row::-webkit-scrollbar { display: none; }
         .history-bubble { padding: 4px 9px; border-radius: 5px; font-size: 10px; font-weight: 700; white-space: nowrap; flex-shrink: 0; font-family: 'SF Mono', 'Courier New', monospace; }
         .history-bubble.green { background: #0f1e14; color: var(--green); border: 1px solid #1a3020; }
@@ -162,7 +163,7 @@
         #action-btn.cashout-btn { background: #c49b3f; color: #0a0a0a; animation: subtle-pulse 2s ease-in-out infinite; }
         @keyframes subtle-pulse { 0%,100% { background: #c49b3f; } 50% { background: #d4a84b; } }
 
-        #players-box { background: var(--panel); border-radius: 12px; padding: 10px 14px; flex-shrink: 0; border: 1px solid var(--border); max-height: 20vh; overflow-y: auto; -webkit-overflow-scrolling: touch; }
+        #players-box { background: var(--panel); border-radius: 12px; padding: 10px 14px; flex-shrink: 0; border: 1px solid var(--border); max-height: 20vh; overflow-y: auto; }
         #players-box .section-title { font-size: 10px; color: var(--text-dim); margin-bottom: 8px; text-transform: uppercase; letter-spacing: 3px; font-weight: 600; }
         #players-list { display: flex; flex-direction: column; gap: 4px; }
         .player-row { display: flex; justify-content: space-between; align-items: center; padding: 8px 10px; background: var(--panel-alt); border-radius: 7px; font-size: 13px; border: 1px solid transparent; min-height: 38px; }
@@ -248,26 +249,39 @@
 
     <script>
         // ====================
-        // TELEGRAM WEBAPP
+        // TELEGRAM INIT
         // ====================
-        const tg = window.Telegram?.WebApp;
-        let tgUser = null;
+        let tg = window.Telegram?.WebApp || null;
         let userId = null;
 
         if (tg) {
-            tg.expand();
             tg.ready();
-            tgUser = tg.initDataUnsafe?.user;
-            if (tgUser) {
-                userId = tgUser.id;
-                document.getElementById('profile-name').textContent = tgUser.username || tgUser.first_name || 'Player';
-                if (tgUser.photo_url) document.getElementById('profile-avatar').src = tgUser.photo_url;
+            tg.expand();
+            const user = tg.initDataUnsafe?.user;
+            if (user) {
+                userId = user.id;
+                document.getElementById('profile-name').textContent = user.username || user.first_name || 'Player';
+                if (user.photo_url) document.getElementById('profile-avatar').src = user.photo_url;
             }
         }
 
-        // Заглушка аватара
+        // Ждём если не загрузилось сразу
+        window.addEventListener('load', () => {
+            if (!tg && window.Telegram?.WebApp) {
+                tg = window.Telegram.WebApp;
+                tg.ready();
+                tg.expand();
+                const user = tg.initDataUnsafe?.user;
+                if (user) {
+                    userId = user.id;
+                    document.getElementById('profile-name').textContent = user.username || user.first_name || 'Player';
+                    if (user.photo_url) document.getElementById('profile-avatar').src = user.photo_url;
+                }
+            }
+        });
+
         const avatar = document.getElementById('profile-avatar');
-        if (!avatar.src || avatar.src.includes('index.html') || avatar.src === '') {
+        if (!avatar.src || avatar.src === '' || avatar.src === window.location.href) {
             avatar.src = 'data:image/svg+xml,%3Csvg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"%3E%3Crect width="100" height="100" fill="%230c0c1a"/%3E%3Ctext x="50" y="62" text-anchor="middle" fill="%235a5a6e" font-size="38"%3EK%3C/text%3E%3C/svg%3E';
         }
 
@@ -282,7 +296,6 @@
         function connectWebSocket() {
             ws = new WebSocket(wsUrl);
             ws.onopen = () => {
-                console.log('WS connected');
                 if (userId) {
                     ws.send(JSON.stringify({
                         type: 'auth',
@@ -292,10 +305,7 @@
                 }
             };
             ws.onmessage = (event) => {
-                try {
-                    const msg = JSON.parse(event.data);
-                    handleServerMessage(msg);
-                } catch (e) {}
+                try { handleServerMessage(JSON.parse(event.data)); } catch (e) {}
             };
             ws.onclose = () => setTimeout(connectWebSocket, 3000);
         }
@@ -318,39 +328,32 @@
 
         const $ = (id) => document.getElementById(id);
 
-        function showToast(msg, duration = 2000) {
-            const toast = $('toast');
+        function showToast(msg, d = 2000) {
+            const t = $('toast');
             clearTimeout(GAME.toastTimeout);
-            toast.textContent = msg;
-            toast.classList.add('show');
-            GAME.toastTimeout = setTimeout(() => toast.classList.remove('show'), duration);
+            t.textContent = msg;
+            t.classList.add('show');
+            GAME.toastTimeout = setTimeout(() => t.classList.remove('show'), d);
         }
 
         function simulateLoading() {
-            const bar = $('loading-bar'),
-                p = $('loading-percent'),
-                s = $('loading-screen'),
-                a = $('app');
+            const bar = $('loading-bar'), p = $('loading-percent'), s = $('loading-screen'), a = $('app');
             let pr = 0;
             const iv = setInterval(() => {
                 pr += Math.random() * 15 + 8;
-                if (pr >= 100) {
-                    pr = 100;
+                if (pr >= 100) { pr = 100;
                     clearInterval(iv);
                     bar.style.width = '100%';
                     p.textContent = '100%';
                     setTimeout(() => { s.classList.add('hidden');
                         a.classList.add('visible');
-                        initApp(); }, 350);
-                } else { bar.style.width = pr + '%';
+                        initApp(); }, 350); } else { bar.style.width = pr + '%';
                     p.textContent = Math.round(pr) + '%'; }
             }, 90);
         }
 
-        function initApp() {
-            connectWebSocket();
-            updateUI();
-        }
+        function initApp() { connectWebSocket();
+            updateUI(); }
 
         function handleServerMessage(msg) {
             switch (msg.type) {
@@ -370,7 +373,6 @@
                     GAME.timer = msg.timer;
                     GAME.hasBet = false;
                     GAME.hasCashedOut = false;
-                    GAME.betAmount = 0;
                     GAME.players = [];
                     $('multiplier-value').textContent = '1.00x';
                     $('multiplier-value').className = 'waiting';
@@ -429,7 +431,7 @@
                     $('action-btn').style.background = '';
                     $('action-btn').style.color = '';
                     GAME.players = msg.players.map(p => ({ name: p.name, bet: p.bet, status: p.cashedOut ? 'won' : 'lost' }));
-                    GAME.history.unshift({ val: msg.crashPoint, cls: msg.crashPoint >= 2.0 ? 'purple' : msg.crashPoint >= 1.01 ? 'green' : 'red' });
+                    GAME.history.unshift({ val: msg.crashPoint, cls: msg.crashPoint >= 2 ? 'purple' : msg.crashPoint >= 1.01 ? 'green' : 'red' });
                     if (GAME.history.length > 30) GAME.history.length = 30;
                     if (GAME.hasBet && !GAME.hasCashedOut) { GAME.stats.total++;
                         GAME.stats.lost++; }
@@ -497,16 +499,13 @@
                 if (p.status === 'won') { cls = 'won';
                     st = 'WIN'; } else if (p.status === 'lost') { cls = 'lost';
                     st = 'LOSS'; }
-                return `<div class="player-row ${cls}"><span class="player-name">${esc(p.name)}</span><span class="player-bet">${p.bet} STARS${st?' <span style="color:'+(p.status==='won'?'var(--green)':'var(--red)')+';font-size:10px;font-weight:700;">'+st+'</span>':''}</span></div>`;
+                return `<div class="player-row ${cls}"><span class="player-name">${esc(p.name)}</span><span class="player-bet">${p.bet} STARS${st?' <span style="color:'+(p.status==='won'?'var(--green)':'var(--red)')+';font-size:10px;">'+st+'</span>':''}</span></div>`;
             }).join('');
         }
 
         function esc(s) { const d = document.createElement('div');
             d.textContent = s; return d.innerHTML; }
 
-        // ====================
-        // ДЕЙСТВИЯ
-        // ====================
         function handleAction() {
             if (GAME.phase === 'waiting') placeBet();
             else if (GAME.phase === 'flying' && GAME.hasBet && !GAME.hasCashedOut) cashOut();
@@ -533,54 +532,35 @@
             }
         }
 
+        // ====================
+        // ПОПОЛНЕНИЕ
+        // ====================
         async function deposit() {
-            if (!userId) { showToast('Откройте в Telegram'); return; }
+            // Обновляем tg если нужно
+            if (!tg && window.Telegram?.WebApp) tg = window.Telegram.WebApp;
+            if (!tg) { showToast('Откройте в Telegram Mini App'); return; }
+            if (!userId && tg.initDataUnsafe?.user) userId = tg.initDataUnsafe.user.id;
+            if (!userId) { showToast('Ошибка авторизации'); return; }
+
             const amount = parseInt($('deposit-input').value);
             if (!amount || amount < 1) { showToast('Введите сумму'); return; }
 
-            // В Telegram Mini App используем tg.openInvoice
-            if (tg) {
-                try {
-                    // Сначала получаем ссылку на инвойс с нашего сервера
-                    const resp = await fetch('/api/create-invoice', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ userId: userId, amount: amount }),
-                    });
-                    const data = await resp.json();
-                    if (data.invoice_link) {
-                        // Открываем инвойс
-                        tg.openInvoice(data.invoice_link, (status) => {
-                            if (status === 'paid') {
-                                showToast('Платёж обрабатывается...');
-                                // Баланс обновится через вебхук
-                            } else {
-                                showToast('Платёж отменён');
-                            }
-                        });
-                    } else {
-                        // Fallback: открываем ссылку в браузере
-                        tg.openLink(data.invoice_link);
-                    }
-                } catch (e) {
-                    // Fallback: открываем ссылку напрямую
-                    try {
-                        const resp = await fetch('/api/create-invoice', {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ userId: userId, amount: amount }),
-                        });
-                        const data = await resp.json();
-                        if (data.invoice_link) {
-                            window.open(data.invoice_link, '_blank');
+            try {
+                const r = await fetch('/api/create-invoice', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ userId, amount }),
+                });
+                const d = await r.json();
+                if (d.invoice_link) {
+                    tg.openInvoice(d.invoice_link, (status) => {
+                        if (status === 'paid') {
+                            showToast('Платёж обрабатывается...');
+                            setTimeout(() => { if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'get_balance' })); }, 3000);
                         }
-                    } catch (err) {
-                        showToast('Ошибка создания платежа');
-                    }
-                }
-            } else {
-                showToast('Пополнение только в Telegram');
-            }
+                    });
+                } else { showToast('Ошибка создания платежа'); }
+            } catch (e) { showToast('Ошибка сети'); }
 
             $('balance-menu').classList.remove('visible');
             $('balance-arrow').innerHTML = '▼';
@@ -607,7 +587,6 @@
             }
         }
 
-        // Меню баланса
         $('balance-bar').addEventListener('click', (e) => {
             e.stopPropagation();
             $('balance-menu').classList.toggle('visible');
@@ -625,9 +604,6 @@
             if (GAME.hasBet && GAME.phase === 'flying' && !GAME.hasCashedOut) { e.preventDefault();
                 e.returnValue = ''; }
         });
-        document.addEventListener('gesturestart', (e) => e.preventDefault());
-        document.addEventListener('gesturechange', (e) => e.preventDefault());
-        document.addEventListener('gestureend', (e) => e.preventDefault());
 
         simulateLoading();
     </script>
