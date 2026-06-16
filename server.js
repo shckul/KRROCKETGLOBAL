@@ -6,7 +6,9 @@ const path = require('path');
 
 // Настройка парсинга JSON для работы с платежными инвойсами Telegram
 app.use(express.json());
-app.use(express.static(path.join(__dirname, 'public')));
+
+// Раздаем статические файлы (css, js, картинки) прямо из корня проекта, а не из папки public
+app.use(express.static(__dirname));
 
 // --- БАЗА ДАННЫХ ИГРОКОВ В ПАМЯТИ СЕРВЕРА ---
 // В реальном продакшене здесь должна быть MongoDB/PostgreSQL
@@ -127,8 +129,8 @@ app.post('/api/create-invoice', (req, res) => {
 
     console.log(`[PAYMENT] Запрос инвойса на пополнение для пользователя ${userId} на сумму ${amount} Stars`);
     
-    // ВНИМАНИЕ: Здесь должна быть интеграция с Bot API (метод createInvoice) через ваш токен бота.
-    // Пока возвращаем заглушку ссылки для демонстрации интерфейса.
+    // Интеграция с Telegram Bot API (метод createInvoice) должна идти через токен вашего бота.
+    // Возвращаем заглушку ссылки для демонстрации интерфейса.
     const mockInvoiceLink = `https://t.me/invoice/mock_stars_payment_${Date.now()}`;
     
     res.json({ invoiceLink: mockInvoiceLink });
@@ -254,14 +256,12 @@ io.on('connection', (socket) => {
     // Отключение клиента
     socket.on('disconnect', () => {
         console.log(`[SOCKET] Клиент отключился: ${socket.id}`);
-        // ВАЖНО: Мы не удаляем ставку игрока из списка, если он вышел во время полета, 
-        // чтобы игра шла честно и его ставка могла «сгореть» или отображаться у других.
     });
 });
 
-// Рендеринг главной страницы
+// Отдаем главную страницу напрямую из корня проекта
 app.get('/', (req, res) => {
-    res.sendFile(path.join(__dirname, 'public', 'index.html'));
+    res.sendFile(path.join(__dirname, 'index.html'));
 });
 
 // --- ЗАПУСК СЕРВЕРА ---
@@ -272,6 +272,6 @@ http.listen(PORT, () => {
     console.log(`[SERVER] Ссылка для тестирования: http://localhost:${PORT}`);
     console.log(`==================================================`);
     
-    // Запускаем бесконечный игровой цикл казино
+    // Запускаем игровой цикл
     startServerEngine();
 });
