@@ -615,14 +615,13 @@
             if (savedData) {
                 try {
                     const parsed = JSON.parse(savedData);
-                    state.user.balance = parsed.balance || 0;
                     state.user.stats = parsed.stats || { bets: 0, wins: 0, losses: 0 };
                 } catch(e) { console.error(e); }
             }
         }
         function saveStorageData() {
             localStorage.setItem('kr_rocket_user_data', JSON.stringify({
-                balance: state.user.balance, stats: state.user.stats
+                stats: state.user.stats
             }));
         }
 
@@ -700,7 +699,7 @@
             ui.statLosses.textContent = state.user.stats.losses;
         }
 
-        // --- CANVAS (Светящаяся Точка) ---
+        // --- CANVAS (Светящаяся Точка с Замедленным Ростом) ---
         const canvas = document.getElementById('game-canvas');
         const ctx = canvas.getContext('2d');
         let trailPoints = [];
@@ -734,12 +733,13 @@
                 const endX = width - 40;
                 const endY = 40;
 
-                let progress = Math.min(1, (state.game.multiplier - 1) / 4);
+                // Замедленная и более плавная кривая анимации
+                let progress = Math.min(1, (state.game.multiplier - 1) / 3.5);
                 let currentX = startX + (endX - startX) * progress;
-                let currentY = startY - (startY - endY) * Math.pow(progress, 1.8);
+                let currentY = startY - (startY - endY) * Math.pow(progress, 1.25);
 
                 trailPoints.push({x: currentX, y: currentY});
-                if(trailPoints.length > 25) trailPoints.shift();
+                if(trailPoints.length > 35) trailPoints.shift();
 
                 if (trailPoints.length > 1) {
                     ctx.strokeStyle = '#00e5ff';
@@ -767,6 +767,29 @@
         }
 
         // --- СИНХРОНИЗАЦИЯ СЕТЕВОГО ДВИЖКА (SOCKET.IO) ---
+        socket.on('connect', () => {
+            console.log('Подключено к серверу!');
+            // Авторизуем пользователя на сервере, чтобы получить баланс
+            socket.emit('auth_user', { userId: state.user.id, username: state.user.username });
+        });
+
+        socket.on('update_balance', (data) => {
+            state.user.balance = data.balance;
+            updateUIBalance();
+        });
+
+        socket.on('payment_credited', (data) => {
+            if (data.userId == state.user.id) {
+                state.user.balance = data.newBalance;
+                updateUIBalance();
+                tg.showAlert(`🎉 Баланс пополнен на сервере! Текущий счет: ${state.user.balance} звезд.`);
+            }
+        });
+
+        socket.on('notification', (data) => {
+            tg.showAlert(data.text);
+        });
+
         socket.on('init_state', (data) => {
             state.game.status = data.status;
             state.game.countdown = data.countdown;
@@ -833,10 +856,8 @@
         socket.on('cashout_success', (data) => {
             if (state.game.userBet) {
                 state.game.userBet.cashedOut = true;
-                state.user.balance += data.winAmount;
                 state.user.stats.wins++;
                 
-                updateUIBalance();
                 updateUIStats();
                 saveStorageData();
                 updateActionButtonView();
@@ -919,12 +940,10 @@
                     if (isNaN(betVal) || betVal < 10) return tg.showAlert("Минимум 10 звезд ⭐");
                     if (state.user.balance < betVal) return tg.showAlert("Недостаточно баланса!");
 
-                    state.user.balance -= betVal;
                     state.user.stats.bets++;
-                    
                     state.game.userBet = { amount: betVal, cashedOut: false };
                     
-                    updateUIBalance(); updateUIStats(); saveStorageData();
+                    updateUIStats(); saveStorageData();
                     tg.HapticFeedback.impactOccurred("medium");
                     
                     socket.emit('place_bet', {
@@ -935,10 +954,9 @@
                     
                     updateActionButtonView();
                 } else {
-                    state.user.balance += state.game.userBet.amount;
                     state.user.stats.bets--;
                     state.game.userBet = null;
-                    updateUIBalance(); updateUIStats(); saveStorageData();
+                    updateUIStats(); saveStorageData();
                     
                     socket.emit('init_state', state.game); 
                     updateActionButtonView();
@@ -1014,10 +1032,12 @@
         ui.executeWithdraw.addEventListener('click', () => {
             const amount = parseInt(ui.withdrawAmount.value);
             if (isNaN(amount) || amount < 100 || state.user.balance < amount) return tg.showAlert("Ошибка создания заявки!");
+            
+            // Заглушка вывода (в будущем можно слать сокет-запрос на списание баланса)
             state.user.balance -= amount;
             updateUIBalance(); saveStorageData();
             ui.balanceModal.classList.remove('active');
-            tg.showAlert("Заявка создана!");
+            tg.showAlert("Заявка на вывод создана!");
         });
 
         function initGame() {
