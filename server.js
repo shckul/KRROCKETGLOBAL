@@ -1,286 +1,277 @@
 const express = require('express');
-const http = require('http');
-const { Server } = require('socket.io');
+const app = express();
+const http = require('http').createServer(app);
+const io = require('socket.io')(http);
 const path = require('path');
 
-const app = express();
-const server = http.createServer(app);
-const io = new Server(server);
-
-const PORT = process.env.PORT || 3000;
-
-// Обязательно включаем парсинг JSON для обработки POST-запросов от инвойсов
+// Настройка парсинга JSON для работы с платежными инвойсами Telegram
 app.use(express.json());
+app.use(express.static(path.join(__dirname, 'public')));
 
-// Раздаем статические файлы (наш index.html и ресурсы) из текущей папки
-app.use(express.static(path.join(__dirname)));
+// --- БАЗА ДАННЫХ ИГРОКОВ В ПАМЯТИ СЕРВЕРА ---
+// В реальном продакшене здесь должна быть MongoDB/PostgreSQL
+const usersDatabase = {};
 
-// --- ГЛОБАЛЬНОЕ СОСТОЯНИЕ ИГРЫ (ОДНО НА ВСЕХ ПОЛЬЗОВАТЕЛЕЙ) ---
+// --- ГЛОБАЛЬНОЕ СОСТОЯНИЕ ИГРЫ (CRASH ENGINE) ---
 const gameState = {
     status: "WAITING", // WAITING, FLYING, CRASHED
     countdown: 5.0,
     multiplier: 1.00,
     crashPoint: 1.00,
-    history: [1.45, 2.10, 1.12, 3.40, 1.19], // Стартовая история для красоты
-    players: [] // Активные ставки в текущем раунде
+    history: [1.24, 5.40, 1.00, 2.15, 1.12, 3.80, 1.45, 1.02, 1.90, 1.33],
+    players: [] // Текущие ставки в раунде: { id, userId, username, amount, cashedOut, winAmount, mult }
 };
 
-// --- МАТЕМАТИКА CRASH (ЧЕСТНЫЙ АЛГОРИТМ) ---
+// Переменная для отслеживания внутреннего времени полета
+let flyElapsedTime = 0;
+let gameLoopInterval = null;
+
+// --- МАТЕМАТИКА CRASH (УРЕЗАННЫЕ ШАНСЫ И ЖЁСТКИЙ СЛИВ) ---
 function generateCrashPoint() {
     const e = Math.random();
-    if (e < 0.03) return 1.00; // 3% шанс мгновенного краша на 1.00x
-    return Math.max(1.01, parseFloat((0.97 / (1 - e)).toFixed(2)));
+    
+    // Повышаем шанс моментального краша на 1.00x с 3% до 8% (слив сразу при старте раунда)
+    if (e < 0.08) {
+        return 1.00;
+    }
+    
+    // Новая математическая формула: занижаем общие коэффициенты.
+    // Теперь высокие иксы (10х+) будут выпадать крайне редко.
+    const rawCrash = parseFloat((0.92 / (1 - e)).toFixed(2));
+    
+    // Искусственный срез: ломаем слишком большие случайные пики
+    if (rawCrash > 1.5 && Math.random() < 0.4) {
+        // Сливной раунд (каждый третий долетает максимум от 1.01 до 1.41х)
+        return parseFloat((1.01 + Math.random() * 0.4).toFixed(2));
+    }
+    
+    return Math.max(1.01, rawCrash);
 }
 
 // --- ЕДИНЫЙ ИГРОВОЙ ЦИКЛ СЕРВЕРА ---
-let elapsed = 0;
+function startServerEngine() {
+    if (gameLoopInterval) clearInterval(gameLoopInterval);
+    
+    gameState.status = "WAITING";
+    gameState.countdown = 5.0;
+    gameState.multiplier = 1.00;
+    gameState.players = []; // Очищаем ставки прошлого раунда
+    
+    console.log(`[GAME] Старт фазы ожидания ставок на 5 секунд...`);
+    io.emit('init_state', gameState);
 
-function runServerGameLoop() {
-    if (gameState.status === "WAITING") {
-        gameState.countdown = 5.0;
-        gameState.multiplier = 1.00;
-        gameState.crashPoint = generateCrashPoint();
-        gameState.players = []; // Сбрасываем ставки прошлых игроков
-
-        console.log(`[GAME] Новый раунд. Точка краша определена: ${gameState.crashPoint}x`);
-
-        // Интервал отсчета времени до старта (100мс)
-        const countdownInterval = setInterval(() => {
+    gameLoopInterval = setInterval(() => {
+        if (gameState.status === "WAITING") {
             gameState.countdown -= 0.1;
-
-            // Отправляем тик ожидания всем клиентам
+            
+            // Отправляем тики отсчета клиентам
             io.emit('game_tick', {
                 status: gameState.status,
-                countdown: gameState.countdown,
-                multiplier: gameState.multiplier,
-                history: gameState.history
+                countdown: Math.max(0, gameState.countdown)
             });
 
             if (gameState.countdown <= 0) {
-                clearInterval(countdownInterval);
+                // Переходим к полету
                 gameState.status = "FLYING";
-                elapsed = 0;
-                runServerGameLoop(); // Переключаемся на цикл полета
+                gameState.crashPoint = generateCrashPoint();
+                flyElapsedTime = 0;
+                console.log(`[GAME] Ракета взлетела! Точка краша определена: ${gameState.crashPoint}x`);
             }
-        }, 100);
 
-    } else if (gameState.status === "FLYING") {
-        // Интервал полета ракетки (40мс для идеальной плавности)
-        const flyInterval = setInterval(() => {
-            elapsed += 0.04;
+        } else if (gameState.status === "FLYING") {
+            flyElapsedTime += 0.035; // Уменьшенный шаг времени для медленного и плавного разгона
 
-            // Медленный, линейно-плавный разгон точки (как на клиенте)
-            gameState.multiplier = parseFloat((1.00 + Math.pow(elapsed, 1.3) * 0.25).toFixed(2));
+            // Формула замедленного роста коэффициента (уменьшена степень разгона и множитель)
+            gameState.multiplier = parseFloat((1.00 + Math.pow(flyElapsedTime, 1.15) * 0.18).toFixed(2));
 
-            // Проверяем, достигла ли ракета точки краша
+            // Проверяем, не достигла ли ракета точки взрыва
             if (gameState.multiplier >= gameState.crashPoint) {
                 gameState.multiplier = gameState.crashPoint;
-                clearInterval(flyInterval);
-
                 gameState.status = "CRASHED";
+                
+                // Добавляем результат в историю и оставляем только последние 10 записей
                 gameState.history.push(gameState.multiplier);
-
-                // Ограничиваем историю последними 20 раундами
-                if (gameState.history.length > 20) {
+                if (gameState.history.length > 10) {
                     gameState.history.shift();
                 }
 
-                console.log(`[GAME] Бум! Краш на коэффициенте ${gameState.multiplier}x`);
-
-                // Отправляем финальный тик краша
+                console.log(`[GAME] Ракета взорвалась на коэффициенте ${gameState.multiplier}x!`);
                 io.emit('game_tick', {
                     status: gameState.status,
-                    countdown: 0,
                     multiplier: gameState.multiplier,
                     history: gameState.history
                 });
 
-                // Задерживаем состояние краша на 3 секунды перед новым раундом
+                // Тайм-аут перед запуском нового раунда (3 секунды на показ экрана краша)
+                clearInterval(gameLoopInterval);
                 setTimeout(() => {
-                    gameState.status = "WAITING";
-                    runServerGameLoop();
+                    startServerEngine();
                 }, 3000);
-
             } else {
-                // Отправляем текущий коэффициент всем игрокам
+                // Если летит нормально, шлем текущий икс всем игрокам
                 io.emit('game_tick', {
                     status: gameState.status,
-                    countdown: 0,
-                    multiplier: gameState.multiplier,
-                    history: gameState.history
+                    multiplier: gameState.multiplier
                 });
             }
-        }, 40);
-    }
+        }
+    }, 100);
 }
 
-// --- ОБРАБОТКА ПОДКЛЮЧЕНИЙ ВЕБ-СОКЕТОВ ---
+// --- API ДЛЯ ПРИЕМА ПЛАТЕЖЕЙ TELEGRAM STARS ---
+app.post('/api/create-invoice', (req, res) => {
+    const { userId, amount } = req.body;
+    if (!userId || !amount) {
+        return res.status(400).json({ error: 'Неверные параметры запроса' });
+    }
+
+    console.log(`[PAYMENT] Запрос инвойса на пополнение для пользователя ${userId} на сумму ${amount} Stars`);
+    
+    // ВНИМАНИЕ: Здесь должна быть интеграция с Bot API (метод createInvoice) через ваш токен бота.
+    // Пока возвращаем заглушку ссылки для демонстрации интерфейса.
+    const mockInvoiceLink = `https://t.me/invoice/mock_stars_payment_${Date.now()}`;
+    
+    res.json({ invoiceLink: mockInvoiceLink });
+});
+
+// Имитация вебхука от Telegram, который сообщает, что юзер реально оплатил звезды
+app.post('/api/telegram-payment-webhook', (req, res) => {
+    const { userId, amount, status } = req.body;
+    
+    if (status === 'paid' && userId && amount) {
+        if (!usersDatabase[userId]) {
+            usersDatabase[userId] = { balance: 0 };
+        }
+        
+        usersDatabase[userId].balance += parseInt(amount);
+        console.log(`[PAYMENT] Успешно! Юзеру ${userId} зачислено ${amount} ⭐. Новый баланс: ${usersDatabase[userId].balance}`);
+        
+        // Моментально пушим обновление баланса подключенному клиенту через веб-сокет
+        io.emit('payment_credited', {
+            userId: userId,
+            newBalance: usersDatabase[userId].balance
+        });
+        
+        return res.json({ success: true });
+    }
+    res.json({ success: false });
+});
+
+// --- ОБРАБОТКА ВЕБ-СОКЕТОВ (SOCKET.IO) ---
 io.on('connection', (socket) => {
+    let currentSocketUserId = null;
     console.log(`[SOCKET] Новый клиент подключился: ${socket.id}`);
 
-    // При подключении сразу передаем игроку текущее состояние игры и таблицу ставок
+    // Приветственная инициализация состояния игры для нового клиента
     socket.emit('init_state', gameState);
 
-    // Обработка ставки от пользователя
+    // Событие авторизации пользователя при входе в игру
+    socket.on('auth_user', (data) => {
+        const { userId, username } = data;
+        if (!userId) return;
+
+        currentSocketUserId = userId;
+        
+        // Если пользователя нет в базе данных сервера — регистрируем с начальным балансом 100 звезд для теста
+        if (!usersDatabase[userId]) {
+            usersDatabase[userId] = {
+                username: username || `User_${userId}`,
+                balance: 100 // Даем приветственный баланс
+            };
+        }
+
+        console.log(`[AUTH] Игрок ${username} (ID: ${userId}) успешно авторизован. Баланс: ${usersDatabase[userId].balance} ⭐`);
+        
+        // Отправляем актуальный серверный баланс лично этому игроку
+        socket.emit('update_balance', { balance: usersDatabase[userId].balance });
+    });
+
+    // Событие ставки от игрока
     socket.on('place_bet', (data) => {
-        if (gameState.status !== "WAITING") return; // Ставки принимаются только в фазе ожидания
+        const { userId, username, amount } = data;
+        
+        if (gameState.status !== "WAITING") {
+            return socket.emit('notification', { text: "Ставки на этот раунд закрыты!" });
+        }
+        
+        if (!usersDatabase[userId] || usersDatabase[userId].balance < amount) {
+            return socket.emit('notification', { text: "Недостаточно баланса на сервере!" });
+        }
 
-        // Проверяем, нет ли уже ставки от этого сокета в текущем раунде
-        const alreadyBetted = gameState.players.find(p => p.socketId === socket.id);
-        if (alreadyBetted) return;
-
-        // Добавляем ставку в глобальный массив раунда
-        const newPlayerBet = {
+        // Списываем баланс на сервере безопасно
+        usersDatabase[userId].balance -= amount;
+        
+        // Добавляем ставку в игровой раунд
+        const newBet = {
             socketId: socket.id,
-            userId: data.userId,
-            username: data.username,
-            amount: data.amount,
+            userId: userId,
+            username: username || "Аноним",
+            amount: amount,
             cashedOut: false,
             winAmount: 0,
-            mult: 1.0
+            mult: 0
         };
+        
+        gameState.players.push(newBet);
+        console.log(`[BET] Ставка принята: ${username} поставил ${amount} ⭐`);
 
-        gameState.players.push(newPlayerBet);
-        console.log(`[BET] Ставка принята: ${data.username} поставил ${data.amount} звезд`);
-
-        // Рассылаем обновленный список игроков всем клиентам
+        // Синхронизируем список игроков и обновляем баланс у ставящего
+        socket.emit('update_balance', { balance: usersDatabase[userId].balance });
         io.emit('sync_players', gameState.players);
     });
 
-    // Обработка забирания выигрыша (Cashout)
+    // Событие нажатия на кнопку "Забрать" (Cashout)
     socket.on('cashout_bet', () => {
-        if (gameState.status !== "FLYING") return; // Забрать деньги можно только во время полета
+        if (gameState.status !== "FLYING") return;
 
+        // Ищем ставку этого конкретного сокета в текущем раунде
         const playerBet = gameState.players.find(p => p.socketId === socket.id && !p.cashedOut);
-        if (!playerBet) return;
+        
+        if (playerBet) {
+            playerBet.cashedOut = true;
+            playerBet.mult = gameState.multiplier;
+            playerBet.winAmount = Math.floor(playerBet.amount * playerBet.mult);
 
-        // Фиксируем текущий коэффициент и рассчитываем сумму выигрыша
-        playerBet.cashedOut = true;
-        playerBet.mult = gameState.multiplier;
-        playerBet.winAmount = Math.floor(playerBet.amount * playerBet.mult);
+            // Начисляем выигрыш на серверный баланс игрока
+            if (usersDatabase[playerBet.userId]) {
+                usersDatabase[playerBet.userId].balance += playerBet.winAmount;
+            }
 
-        console.log(`[CASHOUT] Игрок ${playerBet.username} успешно забрал ${playerBet.winAmount} звезд на ${playerBet.mult}x`);
+            console.log(`[CASHOUT] Игрок ${playerBet.username} забрал ставку на ${playerBet.mult}x и выиграл ${playerBet.winAmount} ⭐`);
 
-        // Лично этому пользователю отправляем подтверждение успеха для зачисления на баланс
-        socket.emit('cashout_success', {
-            winAmount: playerBet.winAmount,
-            mult: playerBet.mult
-        });
+            // Отправляем подтверждение успеха клиенту для запуска анимации и haptic-отклика
+            socket.emit('cashout_success', {
+                winAmount: playerBet.winAmount,
+                mult: playerBet.mult
+            });
 
-        // Всем остальным синхронизируем таблицу
-        io.emit('sync_players', gameState.players);
+            // Обновляем его баланс и синхронизируем обновленную таблицу участников
+            socket.emit('update_balance', { balance: usersDatabase[playerBet.userId].balance });
+            io.emit('sync_players', gameState.players);
+        }
     });
 
+    // Отключение клиента
     socket.on('disconnect', () => {
         console.log(`[SOCKET] Клиент отключился: ${socket.id}`);
+        // ВАЖНО: Мы не удаляем ставку игрока из списка, если он вышел во время полета, 
+        // чтобы игра шла честно и его ставка могла «сгореть» или отображаться у других.
     });
 });
 
-// --- ЭНДПОИНТ ДЛЯ TELEGRAM STARS (ПЛАТЕЖИ) ---
-app.post('/api/create-invoice', async (req, res) => {
-    const { userId, amount } = req.body;
-
-    if (!userId || !amount) {
-        return res.status(400).json({ error: "Не указаны параметры userId или amount" });
-    }
-
-    try {
-        const BOT_TOKEN = process.env.BOT_TOKEN || "ТВОЙ_ТОКЕН_БОТА";
-        
-        const description = `Пополнение баланса KR ROCKET на ${amount} звезд`;
-        const payload = `deposit_user_${userId}_${Date.now()}`;
-        const currency = "XTR"; 
-        const prices = JSON.stringify([{ label: "Telegram Stars", amount: parseInt(amount) }]);
-
-        const telegramUrl = `https://api.telegram.org/bot${BOT_TOKEN}/createInvoiceLink`;
-        const response = await fetch(telegramUrl, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                title: "Пополнение ⭐",
-                description: description,
-                payload: payload,
-                provider_token: "", 
-                currency: currency,
-                prices: JSON.parse(prices)
-            })
-        });
-
-        const data = await response.json();
-
-        if (data.ok && data.result) {
-            return res.json({ invoiceLink: data.result });
-        } else {
-            console.error("[TELEGRAM API ERROR]", data);
-            return res.status(500).json({ error: "Ошибка Telegram API при создании счета" });
-        }
-
-    } catch (error) {
-        console.error("[SERVER INVOICE ERROR]", error);
-        return res.status(500).json({ error: "Внутренняя ошибка сервера" });
-    }
-});
-
-// --- АВТОМАТИЧЕСКОЕ ПОДТВЕРЖДЕНИЕ ПЛАТЕЖЕЙ (LONG POLLING) ---
-const BOT_TOKEN = process.env.BOT_TOKEN || "ТВОЙ_ТОКЕН_БОТА";
-let lastUpdateId = 0;
-
-async function checkTelegramUpdates() {
-    try {
-        const response = await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/getUpdates?offset=${lastUpdateId + 1}&timeout=10`);
-        const data = await response.json();
-
-        if (data.ok && data.result.length > 0) {
-            for (const update of data.result) {
-                lastUpdateId = update.update_id;
-
-                // 1. Ловим запрос на проверку платежа перед списанием звезд (PreCheckout)
-                if (update.pre_checkout_query) {
-                    const qId = update.pre_checkout_query.id;
-                    console.log(`[PAYMENT] Получен pre_checkout_query для платежа ${qId}. Отправляем подтверждение...`);
-                    
-                    // Моментально отвечаем Телеграму "ok: true", чтобы убрать колесико загрузки
-                    await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/answerPreCheckoutQuery`, {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({
-                            pre_checkout_query_id: qId,
-                            ok: true
-                        })
-                    });
-                }
-
-                // 2. Ловим финальное уведомление об успешной оплате
-                if (update.message && update.message.successful_payment) {
-                    const payment = update.message.successful_payment;
-                    console.log(`[PAYMENT] Успешная оплата на сумму ${payment.total_amount} ⭐ от пользователя ${update.message.from.id}`);
-                }
-            }
-        }
-    } catch (err) {
-        // Ошибки таймаута или сети не забивают логи
-    }
-    // Запускаем бесконечную фоновую проверку заново
-    setTimeout(checkTelegramUpdates, 1000);
-}
-
-// --- ДЕФОЛТНЫЙ МАРШРУТ ---
+// Рендеринг главной страницы
 app.get('/', (req, res) => {
-    res.sendFile(path.join(__dirname, 'index.html'));
+    res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 
-// --- ЗАПУСК СЕРВЕРА И ДВИЖОК ИГРЫ ---
-server.listen(PORT, () => {
-    console.log(`=============================================`);
+// --- ЗАПУСК СЕРВЕРА ---
+const PORT = process.env.PORT || 3000;
+http.listen(PORT, () => {
+    console.log(`==================================================`);
     console.log(`[SERVER] KR ROCKET запущен на порту: ${PORT}`);
-    console.log(`[SERVER] Игровой движок Crash успешно запущен.`);
-    console.log(`=============================================`);
+    console.log(`[SERVER] Ссылка для тестирования: http://localhost:${PORT}`);
+    console.log(`==================================================`);
     
-    runServerGameLoop();
-    
-    // Запускаем фоновый обработчик платежей Telegram, если токен прописан в Render
-    if (BOT_TOKEN !== "ТВОЙ_ТОКЕН_БОТА") {
-        console.log(`[SERVER] Служба проверки платежей Stars запущена.`);
-        checkTelegramUpdates();
-    }
+    // Запускаем бесконечный игровой цикл казино
+    startServerEngine();
 });
