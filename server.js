@@ -12,11 +12,11 @@ const wss = new WebSocket.Server({ server });
 // ====================
 // КОНФИГ
 // ====================
-const BOT_TOKEN = process.env.BOT_TOKEN || 'YOUR_BOT_TOKEN_HERE'; // Токен бота из @BotFather
-const WEBHOOK_URL = process.env.WEBHOOK_URL || 'https://your-app.onrender.com'; // URL после деплоя
+const BOT_TOKEN = process.env.BOT_TOKEN || 'YOUR_BOT_TOKEN_HERE';
+const WEBHOOK_URL = process.env.WEBHOOK_URL || 'https://your-app.onrender.com';
 
 // ====================
-// БАЗА ДАННЫХ (простой JSON)
+// БАЗА ДАННЫХ
 // ====================
 const DB_FILE = path.join(__dirname, 'db.json');
 
@@ -25,12 +25,18 @@ function loadDB() {
         if (fs.existsSync(DB_FILE)) {
             return JSON.parse(fs.readFileSync(DB_FILE, 'utf8'));
         }
-    } catch (e) {}
+    } catch (e) {
+        console.error('Ошибка загрузки БД:', e);
+    }
     return { users: {}, history: [] };
 }
 
 function saveDB(db) {
-    fs.writeFileSync(DB_FILE, JSON.stringify(db, null, 2));
+    try {
+        fs.writeFileSync(DB_FILE, JSON.stringify(db, null, 2));
+    } catch (e) {
+        console.error('Ошибка сохранения БД:', e);
+    }
 }
 
 let db = loadDB();
@@ -59,7 +65,35 @@ function updateBalance(userId, amount) {
 // MIDDLEWARE
 // ====================
 app.use(express.json());
-app.use(express.static(path.join(__dirname, 'public')));
+
+// Раздача index.html из корня
+const indexPath = path.join(__dirname, 'index.html');
+console.log('Index path:', indexPath);
+console.log('Index exists:', fs.existsSync(indexPath));
+
+// Корневой маршрут
+app.get('/', (req, res) => {
+    if (fs.existsSync(indexPath)) {
+        res.sendFile(indexPath);
+    } else {
+        res.status(500).send('ERROR: index.html not found in root directory');
+    }
+});
+
+// Раздача статики из корня (для скриптов и стилей если нужно)
+app.use(express.static(__dirname));
+
+// Фолбэк
+app.get('*', (req, res) => {
+    if (req.path.startsWith('/api/') || req.path.startsWith('/webhook')) {
+        return res.status(404).json({ error: 'Not found' });
+    }
+    if (fs.existsSync(indexPath)) {
+        res.sendFile(indexPath);
+    } else {
+        res.status(404).send('Not found');
+    }
+});
 
 // ====================
 // TELEGRAM WEBHOOK
@@ -67,11 +101,10 @@ app.use(express.static(path.join(__dirname, 'public')));
 app.post('/webhook', async (req, res) => {
     try {
         const body = req.body;
+        console.log('Webhook received');
 
-        // Pre-checkout query
         if (body.pre_checkout_query) {
             const query = body.pre_checkout_query;
-            // Подтверждаем платёж
             await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/answerPreCheckoutQuery`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -83,36 +116,31 @@ app.post('/webhook', async (req, res) => {
             return res.sendStatus(200);
         }
 
-        // Успешный платёж
         if (body.message && body.message.successful_payment) {
             const payment = body.message.successful_payment;
             const userId = body.message.from.id;
-            const amount = payment.total_amount; // В звездах (целое число)
-            const payload = payment.invoice_payload; // 'deposit_USERID'
+            const amount = payment.total_amount;
 
-            console.log(`Платёж от ${userId}: ${amount} Stars, payload: ${payload}`);
+            console.log(`Платёж: userId=${userId}, amount=${amount}`);
 
-            // Зачисляем на баланс
             const user = updateBalance(userId, amount);
-            console.log(`Баланс пользователя ${userId}: ${user.balance} Stars`);
 
-            // Отправляем сообщение пользователю
-            await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    chat_id: userId,
-                    text: `✅ Пополнение на ${amount} Stars успешно!\nВаш баланс: ${user.balance} Stars`,
-                }),
-            });
-
-            // Оповещаем через WebSocket если клиент онлайн
-            const client = [...clients.entries()].find(([ws, data]) => data.userId === userId);
-            if (client) {
-                sendTo(client[0], {
-                    type: 'balance_update',
-                    balance: user.balance,
+            try {
+                await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        chat_id: userId,
+                        text: `✅ Пополнение на ${amount} Stars!\nБаланс: ${user.balance} Stars`,
+                    }),
                 });
+            } catch (e) {}
+
+            for (const [ws, clientData] of clients.entries()) {
+                if (clientData.userId === userId) {
+                    sendTo(ws, { type: 'balance_update', balance: user.balance });
+                    break;
+                }
             }
 
             return res.sendStatus(200);
@@ -126,7 +154,7 @@ app.post('/webhook', async (req, res) => {
 });
 
 // ====================
-// API для создания инвойса
+// API
 // ====================
 app.post('/api/create-invoice', async (req, res) => {
     try {
@@ -135,36 +163,39 @@ app.post('/api/create-invoice', async (req, res) => {
             return res.status(400).json({ error: 'Неверные параметры' });
         }
 
-        // Создаём инвойс через Telegram API
         const response = await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/createInvoiceLink`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
                 title: 'Пополнение баланса',
                 description: `${amount} Stars на баланс KR ROCKET`,
-                payload: `deposit_${userId}`,
-                provider_token: '', // Для Stars пустой
+                payload: `deposit_${userId}_${Date.now()}`,
+                provider_token: '',
                 currency: 'XTR',
                 prices: [{ label: `${amount} Stars`, amount: amount }],
             }),
         });
 
         const data = await response.json();
+
         if (data.ok) {
             res.json({ invoice_link: data.result });
         } else {
             res.status(500).json({ error: 'Ошибка создания инвойса' });
         }
     } catch (e) {
-        console.error('Create invoice error:', e);
         res.status(500).json({ error: 'Внутренняя ошибка' });
     }
+});
+
+app.get('/api/health', (req, res) => {
+    res.json({ status: 'ok', users: Object.keys(db.users).length, history: db.history.length });
 });
 
 // ====================
 // ХРАНИЛИЩЕ КЛИЕНТОВ
 // ====================
-const clients = new Map(); // ws -> { userId, name, balance, avatar }
+const clients = new Map();
 let waitingPlayers = [];
 let gameState = {
     phase: 'waiting',
@@ -194,9 +225,6 @@ function generateCrashPoint() {
     return cp;
 }
 
-// ====================
-// РАССЫЛКА
-// ====================
 function broadcast(data) {
     const msg = JSON.stringify(data);
     wss.clients.forEach(client => {
@@ -225,6 +253,8 @@ function startRound() {
     gameState.crashPoint = generateCrashPoint();
     gameState.timer = 5;
     gameState.startTime = null;
+
+    console.log('Новый раунд');
 
     broadcast({ type: 'round_start', timer: gameState.timer });
 
@@ -275,9 +305,15 @@ function doCrash() {
     gameState.phase = 'crashed';
     const finalMult = gameState.crashPoint < 1.01 ? 1.0 : gameState.crashPoint;
 
-    // Сохраняем в историю
     db.history.unshift({ val: finalMult, time: Date.now() });
     if (db.history.length > 50) db.history.length = 50;
+
+    waitingPlayers.forEach(p => {
+        if (!p.cashedOut) {
+            const user = getUser(p.userId);
+            user.stats.lost++;
+        }
+    });
     saveDB(db);
 
     broadcast({
@@ -324,11 +360,8 @@ wss.on('connection', (ws) => {
                 case 'auth': {
                     const userId = parseInt(msg.userId);
                     if (!userId) break;
-
                     client.userId = userId;
                     client.name = msg.name || 'Player';
-                    client.avatar = msg.avatar || '';
-
                     const user = getUser(userId);
                     sendTo(ws, {
                         type: 'auth_success',
@@ -343,27 +376,22 @@ wss.on('connection', (ws) => {
                         sendTo(ws, { type: 'error', message: 'Ставки не принимаются' });
                         return;
                     }
-
                     const userId = client.userId;
                     if (!userId) {
                         sendTo(ws, { type: 'error', message: 'Авторизуйтесь' });
                         return;
                     }
-
                     const betAmount = parseInt(msg.amount);
                     if (!betAmount || betAmount < 10) {
                         sendTo(ws, { type: 'error', message: 'Мин. ставка: 10 STARS' });
                         return;
                     }
-
                     const user = getUser(userId);
                     if (betAmount > user.balance) {
                         sendTo(ws, { type: 'error', message: 'Недостаточно средств' });
                         return;
                     }
-
-                    const alreadyBet = waitingPlayers.find(p => p.userId === userId);
-                    if (alreadyBet) {
+                    if (waitingPlayers.find(p => p.userId === userId)) {
                         sendTo(ws, { type: 'error', message: 'Ставка уже сделана' });
                         return;
                     }
@@ -381,19 +409,10 @@ wss.on('connection', (ws) => {
                         winAmount: 0,
                     });
 
-                    sendTo(ws, {
-                        type: 'bet_accepted',
-                        bet: betAmount,
-                        balance: user.balance,
-                    });
-
+                    sendTo(ws, { type: 'bet_accepted', bet: betAmount, balance: user.balance });
                     broadcast({
                         type: 'players_update',
-                        players: waitingPlayers.map(p => ({
-                            id: p.userId,
-                            name: p.name,
-                            bet: p.bet,
-                        })).sort((a, b) => b.bet - a.bet),
+                        players: waitingPlayers.map(p => ({ id: p.userId, name: p.name, bet: p.bet })).sort((a, b) => b.bet - a.bet),
                     });
                     break;
                 }
@@ -403,7 +422,6 @@ wss.on('connection', (ws) => {
                         sendTo(ws, { type: 'error', message: 'Не время для кэшаута' });
                         return;
                     }
-
                     const userId = client.userId;
                     const player = waitingPlayers.find(p => p.userId === userId);
                     if (!player) {
@@ -430,7 +448,6 @@ wss.on('connection', (ws) => {
                         winAmount: winAmount,
                         balance: user.balance,
                     });
-
                     broadcast({
                         type: 'player_cashed_out',
                         playerId: userId,
@@ -449,17 +466,14 @@ wss.on('connection', (ws) => {
                 }
             }
         } catch (e) {
-            console.error('WS message error:', e);
+            console.error('WS error:', e);
         }
     });
 
     ws.on('close', () => {
-        console.log('Отключение клиента');
         clients.delete(ws);
     });
-
-    ws.on('error', (err) => {
-        console.error('WS error:', err);
+    ws.on('error', () => {
         clients.delete(ws);
     });
 });
@@ -469,7 +483,9 @@ wss.on('connection', (ws) => {
 // ====================
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
-    console.log(`KR ROCKET server running on port ${PORT}`);
-    console.log(`Webhook URL: ${WEBHOOK_URL}/webhook`);
+    console.log(`KR ROCKET running on port ${PORT}`);
+    if (!fs.existsSync(indexPath)) {
+        console.error('ВНИМАНИЕ: index.html не найден в корневой папке!');
+    }
     startRound();
 });
