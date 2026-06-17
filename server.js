@@ -373,12 +373,26 @@ wss.on('connection', (ws) => {
                         if (userName === searchName || userDisplayName === searchName) {
                             user.balance += amount;
                             saveDB(db);
+                            
+                            // Отправляем обновление админу
                             ws.send(JSON.stringify({
                                 type: 'admin_balance_added',
                                 amount: amount,
                                 targetUsername: user.username || user.name,
                                 newBalance: user.balance
                             }));
+                            
+                            // Если накрученный игрок онлайн — обновляем его баланс
+                            for (const [clientWs, clientData] of clients.entries()) {
+                                if (clientData.userId === parseInt(uid) && clientWs.readyState === WebSocket.OPEN) {
+                                    clientWs.send(JSON.stringify({
+                                        type: 'balance_update',
+                                        balance: user.balance
+                                    }));
+                                    break;
+                                }
+                            }
+                            
                             console.log(`💰 АДМИН: +${amount} STARS → @${user.username || user.name} (ID: ${uid}), баланс: ${user.balance}`);
                             found = true;
                             break;
