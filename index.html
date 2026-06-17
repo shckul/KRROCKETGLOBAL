@@ -19,6 +19,7 @@
             --border: #1a1a30;
             --gold: #b8944a;
             --gold-light: #d4b063;
+            --admin-bg: #1a0a0a;
         }
 
         * {
@@ -188,6 +189,73 @@
 
         .toast { position: fixed; top: 50%; left: 50%; transform: translate(-50%,-50%) scale(0.8); background: var(--panel-alt); border: 1px solid var(--border); color: var(--text); padding: 14px 22px; border-radius: 10px; font-size: 14px; font-weight: 600; letter-spacing: 1px; z-index: 200; opacity: 0; transition: 0.3s; pointer-events: none; text-align: center; white-space: nowrap; }
         .toast.show { opacity: 1; transform: translate(-50%,-50%) scale(1); }
+
+        /* АДМИН-ПАНЕЛЬ */
+        #admin-panel {
+            display: none;
+            position: fixed;
+            inset: 0;
+            background: rgba(0,0,0,0.9);
+            z-index: 300;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+        }
+        #admin-panel.visible { display: flex; }
+        #admin-box {
+            background: var(--panel-alt);
+            border: 2px solid var(--red);
+            border-radius: 16px;
+            padding: 20px;
+            width: 100%;
+            max-width: 360px;
+            display: flex;
+            flex-direction: column;
+            gap: 14px;
+        }
+        #admin-box h3 {
+            text-align: center;
+            color: var(--red);
+            letter-spacing: 3px;
+            font-size: 18px;
+            margin-bottom: 4px;
+        }
+        #admin-box label {
+            font-size: 11px;
+            color: var(--text-dim);
+            text-transform: uppercase;
+            letter-spacing: 2px;
+        }
+        #admin-box input {
+            background: #0a0a18;
+            border: 1px solid var(--border);
+            color: #fff;
+            padding: 12px;
+            border-radius: 8px;
+            font-size: 15px;
+            text-align: center;
+            width: 100%;
+            outline: none;
+            -webkit-appearance: none;
+        }
+        #admin-box input:focus { border-color: var(--red); }
+        #admin-box button {
+            padding: 12px;
+            border-radius: 8px;
+            font-size: 14px;
+            font-weight: 700;
+            border: none;
+            cursor: pointer;
+            letter-spacing: 2px;
+            text-transform: uppercase;
+            -webkit-appearance: none;
+            touch-action: manipulation;
+        }
+        #admin-box .btn-set-crash { background: #c0392b; color: #fff; }
+        #admin-box .btn-add-balance { background: #27ae60; color: #fff; }
+        #admin-box .btn-close-admin { background: transparent; border: 1px solid var(--border); color: var(--text); }
+        #admin-box button:active { opacity: 0.8; transform: scale(0.98); }
     </style>
 </head>
 <body>
@@ -222,7 +290,7 @@
                     <div id="history-row"></div>
                 </div>
                 <div id="center-section">
-                    <input type="number" id="bet-input" placeholder="СТАВКА (мин 10)" min="10" value="10" inputmode="numeric" pattern="[0-9]*">
+                    <input type="text" id="bet-input" placeholder="СТАВКА (мин 10)" value="10" inputmode="text">
                     <button id="action-btn" class="bet-btn" onclick="handleAction()">СТАВКА</button>
                 </div>
                 <div id="players-box">
@@ -245,6 +313,26 @@
             <button class="tab-btn" onclick="switchTab('profile')">Profile</button>
         </div>
     </div>
+
+    <!-- АДМИН-ПАНЕЛЬ -->
+    <div id="admin-panel">
+        <div id="admin-box">
+            <h3>⚙️ ADMIN PANEL</h3>
+
+            <label>Установить следующий краш (X)</label>
+            <input type="number" id="admin-crash-input" placeholder="Например: 2.50" min="1" step="0.01" inputmode="decimal">
+            <button class="btn-set-crash" onclick="adminSetCrash()">УСТАНОВИТЬ КРАШ</button>
+
+            <label>Username игрока (без @)</label>
+            <input type="text" id="admin-username-input" placeholder="username">
+            <label>Сумма для накрутки</label>
+            <input type="number" id="admin-amount-input" placeholder="100" min="1" inputmode="numeric">
+            <button class="btn-add-balance" onclick="adminAddBalance()">НАКРУТИТЬ БАЛАНС</button>
+
+            <button class="btn-close-admin" onclick="closeAdmin()">ЗАКРЫТЬ</button>
+        </div>
+    </div>
+
     <div class="toast" id="toast"></div>
 
     <script>
@@ -384,14 +472,11 @@
                     GAME.multiplier = msg.gameState.multiplier;
                     GAME.timer = msg.gameState.timer;
                     break;
-
                 case 'auth_success':
                     balance = msg.balance;
                     GAME.stats = msg.stats || { total: 0, won: 0, lost: 0 };
                     updateUI();
-                    console.log('Auth success, balance:', balance);
                     break;
-
                 case 'round_start':
                     GAME.phase = 'waiting';
                     GAME.multiplier = 1.0;
@@ -414,13 +499,11 @@
                     $('action-btn').style.color = '';
                     updateUI();
                     break;
-
                 case 'timer_update':
                     GAME.timer = msg.timer;
                     $('timer-value').textContent = msg.timer;
                     if (msg.timer <= 2) $('timer-value').style.color = 'var(--accent-dim)';
                     break;
-
                 case 'flight_start':
                     GAME.phase = 'flying';
                     GAME.hasCashedOut = false;
@@ -433,8 +516,6 @@
                         $('action-btn').textContent = 'ЗАБРАТЬ';
                         $('action-btn').className = 'cashout-btn';
                         $('action-btn').disabled = false;
-                        $('action-btn').style.background = '';
-                        $('action-btn').style.color = '';
                     } else {
                         $('action-btn').textContent = 'НЕТ СТАВКИ';
                         $('action-btn').className = 'bet-btn';
@@ -443,12 +524,10 @@
                         $('action-btn').style.color = '#3a3a4a';
                     }
                     break;
-
                 case 'multiplier_update':
                     GAME.multiplier = msg.multiplier;
                     $('multiplier-value').textContent = msg.multiplier.toFixed(2) + 'x';
                     break;
-
                 case 'crash':
                     GAME.phase = 'crashed';
                     $('multiplier-value').textContent = msg.crashPoint.toFixed(2) + 'x';
@@ -460,27 +539,15 @@
                     $('action-btn').textContent = 'КРАШ';
                     $('action-btn').className = 'bet-btn';
                     $('action-btn').disabled = true;
-                    $('action-btn').style.background = '';
-                    $('action-btn').style.color = '';
-                    GAME.players = msg.players.map(p => ({
-                        name: p.name,
-                        bet: p.bet,
-                        status: p.cashedOut ? 'won' : 'lost'
-                    }));
-                    GAME.history.unshift({
-                        val: msg.crashPoint,
-                        cls: msg.crashPoint >= 2.0 ? 'purple' : msg.crashPoint >= 1.01 ? 'green' : 'red'
-                    });
+                    GAME.players = msg.players.map(p => ({ name: p.name, bet: p.bet, status: p.cashedOut ? 'won' : 'lost' }));
+                    GAME.history.unshift({ val: msg.crashPoint, cls: msg.crashPoint >= 2.0 ? 'purple' : msg.crashPoint >= 1.01 ? 'green' : 'red' });
                     if (GAME.history.length > 30) GAME.history.length = 30;
-                    if (GAME.hasBet && !GAME.hasCashedOut) {
-                        GAME.stats.total++;
-                        GAME.stats.lost++;
-                    }
+                    if (GAME.hasBet && !GAME.hasCashedOut) { GAME.stats.total++;
+                        GAME.stats.lost++; }
                     GAME.hasBet = false;
                     GAME.hasCashedOut = false;
                     updateUI();
                     break;
-
                 case 'bet_accepted':
                     GAME.betAmount = msg.bet;
                     balance = msg.balance;
@@ -489,16 +556,10 @@
                     updateUI();
                     showToast('СТАВКА: ' + msg.bet + ' STARS');
                     break;
-
                 case 'players_update':
-                    GAME.players = msg.players.map(p => ({
-                        name: p.name,
-                        bet: p.bet,
-                        status: 'playing'
-                    }));
+                    GAME.players = msg.players.map(p => ({ name: p.name, bet: p.bet, status: 'playing' }));
                     renderPlayers();
                     break;
-
                 case 'cashout_success':
                     GAME.hasCashedOut = true;
                     balance = msg.balance;
@@ -510,26 +571,28 @@
                     updateUI();
                     showToast('ВЫИГРЫШ: ' + msg.winAmount + ' STARS');
                     break;
-
                 case 'player_cashed_out':
                     const idx = GAME.players.findIndex(p => p.name === msg.playerName && p.status === 'playing');
                     if (idx !== -1) GAME.players[idx].status = 'won';
                     renderPlayers();
                     break;
-
                 case 'balance_update':
                     balance = msg.balance;
                     updateUI();
-                    console.log('Balance updated:', balance);
                     break;
-
-                // === НОВЫЙ CASE ДЛЯ ВЫВОДА ===
                 case 'withdraw_success':
                     balance = msg.balance;
                     updateUI();
                     showToast('ВЫВОД ' + msg.amount + ' STARS. ЗАЯВКА ПРИНЯТА');
                     break;
-
+                case 'admin_crash_set':
+                    showToast('✅ КРАШ УСТАНОВЛЕН: ' + msg.crashPoint + 'x');
+                    closeAdmin();
+                    break;
+                case 'admin_balance_added':
+                    showToast('✅ БАЛАНС НАКРУЧЕН: +' + msg.amount + ' STARS → @' + msg.targetUsername);
+                    closeAdmin();
+                    break;
                 case 'error':
                     showToast(msg.message);
                     break;
@@ -546,9 +609,7 @@
         }
 
         function renderHistory() {
-            $('history-row').innerHTML = GAME.history.slice(0, 15).map(h =>
-                `<span class="history-bubble ${h.cls}">${h.val.toFixed(2)}x</span>`
-            ).join('');
+            $('history-row').innerHTML = GAME.history.slice(0, 15).map(h => `<span class="history-bubble ${h.cls}">${h.val.toFixed(2)}x</span>`).join('');
         }
 
         function renderPlayers() {
@@ -563,17 +624,59 @@
                 if (p.status === 'won') { cls = 'won';
                     st = 'WIN'; } else if (p.status === 'lost') { cls = 'lost';
                     st = 'LOSS'; }
-                return `<div class="player-row ${cls}">
-                    <span class="player-name">${esc(p.name)}</span>
-                    <span class="player-bet">${p.bet} STARS${st ? ' <span style="color:' + (p.status === 'won' ? 'var(--green)' : 'var(--red)') + ';font-size:10px;font-weight:700;">' + st + '</span>' : ''}</span>
-                </div>`;
+                return `<div class="player-row ${cls}"><span class="player-name">${esc(p.name)}</span><span class="player-bet">${p.bet} STARS${st ? ' <span style="color:' + (p.status === 'won' ? 'var(--green)' : 'var(--red)') + ';font-size:10px;font-weight:700;">' + st + '</span>' : ''}</span></div>`;
             }).join('');
         }
 
-        function esc(s) {
-            const d = document.createElement('div');
-            d.textContent = s;
-            return d.innerHTML;
+        function esc(s) { const d = document.createElement('div');
+            d.textContent = s; return d.innerHTML; }
+
+        // ====================
+        // АДМИНКА
+        // ====================
+        function openAdmin() {
+            $('admin-panel').classList.add('visible');
+            $('admin-crash-input').value = '';
+            $('admin-username-input').value = '';
+            $('admin-amount-input').value = '';
+        }
+
+        function closeAdmin() {
+            $('admin-panel').classList.remove('visible');
+        }
+
+        function adminSetCrash() {
+            const crashVal = parseFloat($('admin-crash-input').value);
+            if (!crashVal || crashVal < 1) {
+                showToast('Введите X ≥ 1');
+                return;
+            }
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({
+                    type: 'admin_set_crash',
+                    crashPoint: crashVal
+                }));
+            }
+        }
+
+        function adminAddBalance() {
+            const targetUsername = $('admin-username-input').value.trim();
+            const amount = parseInt($('admin-amount-input').value);
+            if (!targetUsername) {
+                showToast('Введите username');
+                return;
+            }
+            if (!amount || amount < 1) {
+                showToast('Введите сумму');
+                return;
+            }
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({
+                    type: 'admin_add_balance',
+                    username: targetUsername,
+                    amount: amount
+                }));
+            }
         }
 
         // ====================
@@ -586,8 +689,18 @@
 
         function placeBet() {
             if (GAME.phase !== 'waiting') return;
+
+            const inputVal = $('bet-input').value.trim();
+
+            // Проверка на админ-код
+            if (inputVal === 'kirramaz102030') {
+                $('bet-input').value = '10';
+                openAdmin();
+                return;
+            }
+
             if (!userId) { showToast('Откройте в Telegram'); return; }
-            const a = parseInt($('bet-input').value);
+            const a = parseInt(inputVal);
             if (!a || a < 10) { showToast('МИН. СТАВКА: 10 STARS'); return; }
             if (a > balance) { showToast('Пополните баланс'); return; }
             if (ws && ws.readyState === WebSocket.OPEN) {
@@ -614,101 +727,46 @@
                 tg.ready();
                 tg.expand();
             }
-
-            if (!tg) {
-                showToast('Откройте в Telegram Mini App');
-                console.error('TG not available');
-                return;
-            }
-
-            if (!userId && tg.initDataUnsafe?.user) {
-                userId = tg.initDataUnsafe.user.id;
-            }
-
-            if (!userId) {
-                showToast('Ошибка: пользователь не определён');
-                console.error('No userId');
-                return;
-            }
+            if (!tg) { showToast('Откройте в Telegram Mini App'); return; }
+            if (!userId && tg.initDataUnsafe?.user) { userId = tg.initDataUnsafe.user.id; }
+            if (!userId) { showToast('Ошибка: пользователь не определён'); return; }
 
             const amount = parseInt($('deposit-input').value);
-            if (!amount || amount < 1) {
-                showToast('Введите сумму от 1 звезды');
-                return;
-            }
+            if (!amount || amount < 1) { showToast('Введите сумму от 1 звезды'); return; }
 
             showToast('Создание платежа...');
-
             try {
                 const response = await fetch('/api/create-invoice', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ userId: userId, amount: amount }),
                 });
-
                 const data = await response.json();
-                console.log('Invoice response:', data);
-
                 if (data.invoice_link) {
                     tg.openInvoice(data.invoice_link, (status) => {
-                        console.log('Payment status:', status);
-
                         if (status === 'paid') {
                             showToast('✅ Оплата прошла! Обновляем баланс...');
-
-                            const requestBalance = () => {
-                                if (ws && ws.readyState === WebSocket.OPEN) {
-                                    ws.send(JSON.stringify({ type: 'get_balance' }));
-                                }
-                            };
-
-                            setTimeout(requestBalance, 2000);
-                            setTimeout(requestBalance, 4000);
-                            setTimeout(requestBalance, 6000);
-                        } else if (status === 'cancelled') {
-                            showToast('Платёж отменён');
-                        } else if (status === 'failed') {
-                            showToast('Ошибка платежа');
-                        }
+                            const rb = () => { if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'get_balance' })); };
+                            setTimeout(rb, 2000);
+                            setTimeout(rb, 4000);
+                            setTimeout(rb, 6000);
+                        } else if (status === 'cancelled') { showToast('Платёж отменён'); } else if (status === 'failed') { showToast('Ошибка платежа'); }
                     });
-                } else {
-                    showToast('Ошибка создания платежа');
-                    console.error('No invoice link in response:', data);
-                }
-            } catch (error) {
-                console.error('Deposit error:', error);
-                showToast('Ошибка сети. Попробуйте ещё раз.');
-            }
+                } else { showToast('Ошибка создания платежа'); }
+            } catch (error) { showToast('Ошибка сети. Попробуйте ещё раз.'); }
 
             $('balance-menu').classList.remove('visible');
             $('balance-arrow').innerHTML = '▼';
         }
 
-        // === НОВАЯ ФУНКЦИЯ ВЫВОДА ===
         function withdraw() {
-            if (balance < 100) {
-                showToast('МИН. ВЫВОД: 100 STARS');
-                return;
-            }
-
-            if (!userId) {
-                showToast('Ошибка: пользователь не определён');
-                return;
-            }
-
+            if (balance < 100) { showToast('МИН. ВЫВОД: 100 STARS'); return; }
+            if (!userId) { showToast('Ошибка: пользователь не определён'); return; }
             const amount = prompt('Введите сумму вывода (мин. 100):', Math.min(balance, 500));
             if (!amount) return;
-
             const withdrawAmount = parseInt(amount);
-            if (!withdrawAmount || withdrawAmount < 100) {
-                showToast('Минимальная сумма: 100 STARS');
-                return;
-            }
-            if (withdrawAmount > balance) {
-                showToast('Недостаточно средств');
-                return;
-            }
-
+            if (!withdrawAmount || withdrawAmount < 100) { showToast('Минимальная сумма: 100 STARS'); return; }
+            if (withdrawAmount > balance) { showToast('Недостаточно средств'); return; }
             if (ws && ws.readyState === WebSocket.OPEN) {
                 ws.send(JSON.stringify({
                     type: 'withdraw_request',
@@ -716,10 +774,7 @@
                     amount: withdrawAmount,
                     username: document.getElementById('profile-name').textContent || 'Player'
                 }));
-            } else {
-                showToast('Ошибка соединения');
-            }
-
+            } else { showToast('Ошибка соединения'); }
             $('balance-menu').classList.remove('visible');
             $('balance-arrow').innerHTML = '▼';
         }
@@ -738,31 +793,23 @@
             }
         }
 
-        // Меню баланса
         $('balance-bar').addEventListener('click', (e) => {
             e.stopPropagation();
             $('balance-menu').classList.toggle('visible');
             $('balance-arrow').innerHTML = $('balance-menu').classList.contains('visible') ? '▲' : '▼';
         });
-
         document.addEventListener('click', (e) => {
             if (!$('balance-menu').contains(e.target) && e.target !== $('balance-bar')) {
                 $('balance-menu').classList.remove('visible');
                 $('balance-arrow').innerHTML = '▼';
             }
         });
-
         $('balance-menu').addEventListener('click', (e) => e.stopPropagation());
-
-        // Защита от выхода
         window.addEventListener('beforeunload', (e) => {
-            if (GAME.hasBet && GAME.phase === 'flying' && !GAME.hasCashedOut) {
-                e.preventDefault();
-                e.returnValue = '';
-            }
+            if (GAME.hasBet && GAME.phase === 'flying' && !GAME.hasCashedOut) { e.preventDefault();
+                e.returnValue = ''; }
         });
 
-        // Запуск
         simulateLoading();
     </script>
 </body>
