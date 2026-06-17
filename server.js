@@ -151,7 +151,7 @@ app.get('/api/health', (req, res) => {
     res.json({ status: 'ok', users: Object.keys(db.users).length });
 });
 
-// Игровой код (без изменений)
+// Игровой код
 const clients = new Map();
 let waitingPlayers = [];
 let gameState = {
@@ -292,6 +292,53 @@ wss.on('connection', (ws) => {
                 case 'get_balance': {
                     const u = getUser(cd.userId);
                     ws.send(JSON.stringify({ type: 'balance_update', balance: u.balance }));
+                    break;
+                }
+                case 'withdraw_request': {
+                    const userId = msg.userId;
+                    const amount = parseInt(msg.amount);
+                    const username = msg.username || 'Player';
+
+                    if (!userId || !amount || amount < 100) {
+                        ws.send(JSON.stringify({ type: 'error', message: 'Мин. вывод: 100 STARS' }));
+                        return;
+                    }
+
+                    const u = getUser(userId);
+                    if (amount > u.balance) {
+                        ws.send(JSON.stringify({ type: 'error', message: 'Недостаточно средств' }));
+                        return;
+                    }
+
+                    u.balance -= amount;
+                    saveDB(db);
+
+                    const withdrawalsFile = path.join(__dirname, 'withdrawals.json');
+                    let withdrawals = [];
+                    try {
+                        if (fs.existsSync(withdrawalsFile)) {
+                            withdrawals = JSON.parse(fs.readFileSync(withdrawalsFile, 'utf8'));
+                        }
+                    } catch (e) {}
+
+                    withdrawals.push({
+                        id: Date.now(),
+                        userId: userId,
+                        username: username,
+                        amount: amount,
+                        status: 'pending',
+                        date: new Date().toISOString(),
+                    });
+
+                    fs.writeFileSync(withdrawalsFile, JSON.stringify(withdrawals, null, 2));
+
+                    ws.send(JSON.stringify({
+                        type: 'withdraw_success',
+                        amount: amount,
+                        balance: u.balance,
+                    }));
+
+                    console.log(`📤 ВЫВОД: @${username} (ID: ${userId}) - ${amount} STARS`);
                     break;
                 }
             }
