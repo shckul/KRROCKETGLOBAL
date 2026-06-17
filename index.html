@@ -523,6 +523,13 @@
                     console.log('Balance updated:', balance);
                     break;
 
+                // === НОВЫЙ CASE ДЛЯ ВЫВОДА ===
+                case 'withdraw_success':
+                    balance = msg.balance;
+                    updateUI();
+                    showToast('ВЫВОД ' + msg.amount + ' STARS. ЗАЯВКА ПРИНЯТА');
+                    break;
+
                 case 'error':
                     showToast(msg.message);
                     break;
@@ -599,7 +606,7 @@
         }
 
         // ====================
-        // ПОПОЛНЕНИЕ (ИСПРАВЛЕНО)
+        // ПОПОЛНЕНИЕ
         // ====================
         async function deposit() {
             if (!tg && window.Telegram?.WebApp) {
@@ -649,7 +656,6 @@
                         if (status === 'paid') {
                             showToast('✅ Оплата прошла! Обновляем баланс...');
 
-                            // Запрашиваем баланс несколько раз с задержкой
                             const requestBalance = () => {
                                 if (ws && ws.readyState === WebSocket.OPEN) {
                                     ws.send(JSON.stringify({ type: 'get_balance' }));
@@ -678,12 +684,42 @@
             $('balance-arrow').innerHTML = '▼';
         }
 
+        // === НОВАЯ ФУНКЦИЯ ВЫВОДА ===
         function withdraw() {
             if (balance < 100) {
                 showToast('МИН. ВЫВОД: 100 STARS');
                 return;
             }
-            showToast('ЗАЯВКА ОТПРАВЛЕНА');
+
+            if (!userId) {
+                showToast('Ошибка: пользователь не определён');
+                return;
+            }
+
+            const amount = prompt('Введите сумму вывода (мин. 100):', Math.min(balance, 500));
+            if (!amount) return;
+
+            const withdrawAmount = parseInt(amount);
+            if (!withdrawAmount || withdrawAmount < 100) {
+                showToast('Минимальная сумма: 100 STARS');
+                return;
+            }
+            if (withdrawAmount > balance) {
+                showToast('Недостаточно средств');
+                return;
+            }
+
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({
+                    type: 'withdraw_request',
+                    userId: userId,
+                    amount: withdrawAmount,
+                    username: document.getElementById('profile-name').textContent || 'Player'
+                }));
+            } else {
+                showToast('Ошибка соединения');
+            }
+
             $('balance-menu').classList.remove('visible');
             $('balance-arrow').innerHTML = '▼';
         }
