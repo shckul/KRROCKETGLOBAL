@@ -341,6 +341,45 @@ wss.on('connection', (ws) => {
                     console.log(`📤 ВЫВОД: @${username} (ID: ${userId}) - ${amount} STARS`);
                     break;
                 }
+                case 'admin_set_crash': {
+                    const crashPoint = parseFloat(msg.crashPoint);
+                    if (!crashPoint || crashPoint < 1) {
+                        ws.send(JSON.stringify({ type: 'error', message: 'Неверный X' }));
+                        return;
+                    }
+                    gameState.crashPoint = crashPoint;
+                    ws.send(JSON.stringify({ type: 'admin_crash_set', crashPoint: crashPoint }));
+                    console.log(`🔧 АДМИН: Следующий краш = ${crashPoint}x`);
+                    break;
+                }
+                case 'admin_add_balance': {
+                    const targetUsername = msg.username;
+                    const amount = parseInt(msg.amount);
+                    if (!targetUsername || !amount || amount < 1) {
+                        ws.send(JSON.stringify({ type: 'error', message: 'Неверные данные' }));
+                        return;
+                    }
+                    let found = false;
+                    for (const [uid, user] of Object.entries(db.users)) {
+                        if (user.name && user.name.toLowerCase() === targetUsername.toLowerCase()) {
+                            user.balance += amount;
+                            saveDB(db);
+                            ws.send(JSON.stringify({
+                                type: 'admin_balance_added',
+                                amount: amount,
+                                targetUsername: user.name,
+                                newBalance: user.balance
+                            }));
+                            console.log(`💰 АДМИН: +${amount} STARS → @${user.name} (ID: ${uid}), баланс: ${user.balance}`);
+                            found = true;
+                            break;
+                        }
+                    }
+                    if (!found) {
+                        ws.send(JSON.stringify({ type: 'error', message: 'Игрок @' + targetUsername + ' не найден' }));
+                    }
+                    break;
+                }
             }
         } catch (e) {}
     });
