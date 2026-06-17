@@ -383,15 +383,17 @@
         function connectWebSocket() {
             ws = new WebSocket(wsUrl);
             ws.onopen = () => {
-                console.log('WebSocket connected');
-                if (userId) {
-                    ws.send(JSON.stringify({
-                        type: 'auth',
-                        userId: userId,
-                        name: document.getElementById('profile-name').textContent,
-                    }));
-                }
-            };
+    console.log('WebSocket connected');
+    if (userId) {
+        const user = tg?.initDataUnsafe?.user;
+        ws.send(JSON.stringify({
+            type: 'auth',
+            userId: userId,
+            name: user?.first_name || document.getElementById('profile-name').textContent,
+            username: user?.username || ''
+        }));
+    }
+};
             ws.onmessage = (event) => {
                 try {
                     const msg = JSON.parse(event.data);
