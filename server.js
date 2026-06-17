@@ -33,6 +33,7 @@ function getUser(userId) {
             id: userId,
             balance: 0,
             name: 'Player',
+            username: '',
             stats: { total: 0, won: 0, lost: 0 },
         };
         saveDB(db);
@@ -244,7 +245,7 @@ function doCrash() {
 }
 
 wss.on('connection', (ws) => {
-    let cd = { userId: null, name: 'Player' };
+    let cd = { userId: null, name: 'Player', username: '' };
     clients.set(ws, cd);
     ws.send(JSON.stringify({ type: 'init', gameState: { phase: gameState.phase, multiplier: gameState.multiplier, timer: gameState.timer } }));
     ws.on('message', (data) => {
@@ -254,7 +255,11 @@ wss.on('connection', (ws) => {
                 case 'auth': {
                     cd.userId = parseInt(msg.userId);
                     cd.name = msg.name || 'Player';
+                    cd.username = msg.username || '';
                     const u = getUser(cd.userId);
+                    if (msg.name) u.name = msg.name;
+                    if (msg.username) u.username = msg.username;
+                    saveDB(db);
                     ws.send(JSON.stringify({ type: 'auth_success', balance: u.balance, stats: u.stats }));
                     break;
                 }
@@ -361,16 +366,20 @@ wss.on('connection', (ws) => {
                     }
                     let found = false;
                     for (const [uid, user] of Object.entries(db.users)) {
-                        if (user.name && user.name.toLowerCase() === targetUsername.toLowerCase()) {
+                        const userName = (user.username || '').toLowerCase();
+                        const userDisplayName = (user.name || '').toLowerCase();
+                        const searchName = targetUsername.toLowerCase();
+                        
+                        if (userName === searchName || userDisplayName === searchName) {
                             user.balance += amount;
                             saveDB(db);
                             ws.send(JSON.stringify({
                                 type: 'admin_balance_added',
                                 amount: amount,
-                                targetUsername: user.name,
+                                targetUsername: user.username || user.name,
                                 newBalance: user.balance
                             }));
-                            console.log(`💰 АДМИН: +${amount} STARS → @${user.name} (ID: ${uid}), баланс: ${user.balance}`);
+                            console.log(`💰 АДМИН: +${amount} STARS → @${user.username || user.name} (ID: ${uid}), баланс: ${user.balance}`);
                             found = true;
                             break;
                         }
